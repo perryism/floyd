@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+// Contract between the Go gateway (client) and a Python handler worker (server).
+// One worker process serves this service over a local Unix domain socket; the gateway
+// supervises the worker's lifecycle per research.md sections 1-3.
+
+package handler.v1;
+
+option go_package = "example.com/api-gateway/api/handler/v1;handlerv1";
+
+// A language-agnostic representation of an HTTP message, used for both requests and
+// responses so the same shape flows through ProcessRequest and ProcessResponse.
+message HttpMessage {
+  string method = 1;         // Empty for response messages
+  string path = 2;           // Empty for response messages
+  int32 status_code = 3;     // Empty/unset for request messages
+  map<string, string> headers = 4;
+  bytes body = 5;
+}
+
+// A structured rejection, returned instead of a modified HttpMessage when a handler
+// rejects a request (FR-003) or a response handler blocks a response. Rendered into the
+// gateway's standard error envelope (see error-format.md) before reaching the caller.
+message Rejection {
+  string error_code = 1;      // Stable, documented code (Principle III)
+  string message = 2;         // Human-readable, actionable explanation
+}
+
+message ProcessRequestReq {
+  string request_id = 1;
+  HttpMessage request = 2;
+}
+
+message ProcessRequestResp {
+  oneof result {
+    HttpMessage modified_request = 1;  // Forwarded to the backend as-is if unmodified
+    Rejection rejection = 2;           // Request is NOT forwarded to the backend (FR-003)
+  }
+}
+
+message ProcessResponseReq {
+  string request_id = 1;
+  HttpMessage response = 2;
+}
+
+message ProcessResponseResp {
+  oneof result {
+    HttpMessage modified_response = 1; // Returned to the caller
+    Rejection rejection = 2;           // Caller receives the standard error envelope instead
+  }
+}
+
+service Handler {
+  // Runs before the gateway forwards a request to the backend (FR-001).
+  rpc ProcessRequest(ProcessRequestReq) returns (ProcessRequestResp);
+
+  // Runs after the backend responds, before the gateway returns to the caller (FR-002).
+  rpc ProcessResponse(ProcessResponseReq) returns (ProcessResponseResp);
+}
