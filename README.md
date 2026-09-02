@@ -11,6 +11,8 @@ make build
 make venv   # once, to create .venv with a matching handlers-sdk + protobuf install
 ```
 
+`--config` points at a YAML file listing every route this process serves:
+
 ```yaml
 # config.yaml
 - name: app1
@@ -28,11 +30,10 @@ GATEWAY_PYTHON="$(pwd)/.venv/bin/python3" \
 ```
 
 - `--host` / `--port`: where this gateway process itself listens.
-- `--config`: path to a YAML file listing every route this process serves. Each route has a
-  `name` (also its first path segment — `/app1/...` routes to `app1`, with that segment
-  stripped before forwarding), a `dest`, an optional `description` (for operators; the gateway
-  never reads it), and optional `handlers` (one path, or a list to chain several in order —
-  omit for plain pass-through on that route).
+- `--config`: each route has a `name` (also its first path segment — `/app1/...` routes to
+  `app1`, with that segment stripped before forwarding), a `dest`, an optional `description`
+  (for operators; the gateway never reads it), and optional `handlers` (one path, or a list to
+  chain several in order — omit for plain pass-through on that route).
 - `GATEWAY_PYTHON`: the Python interpreter used to launch handler workers. Defaults to
   whatever `python3` resolves to on `$PATH` — set this explicitly rather than relying on that
   default, especially if `python3` happens to be a shared/pyenv/conda environment: the
@@ -44,6 +45,36 @@ All configuration is resolved once at startup from these flags — there is no r
 route/handler-management API. Changing routes means editing `config.yaml` and restarting.
 A built-in `GET /_` endpoint lists every configured route's name and description, for
 discovery.
+
+### Try it: a runnable example
+
+[examples/config.yaml](examples/config.yaml) defines three routes exercising every option —
+`app1` with no handlers (plain pass-through), `app2` with one handler
+([examples/handlers/add_request_id.py](examples/handlers/add_request_id.py)), and `app3`
+chaining two ([examples/handlers/null_handler.py](examples/handlers/null_handler.py) then
+`add_request_id.py`). [examples/echo_backend.py](examples/echo_backend.py) is a minimal
+stdlib-only backend that reflects the request it received as JSON, so `curl` alone shows
+exactly what each route's handlers did — a plain `python3 -m http.server` wouldn't let you see
+an injected header in the response. From the repo root, in one terminal:
+
+```bash
+python3 examples/echo_backend.py 18081 &
+python3 examples/echo_backend.py 18082 &
+python3 examples/echo_backend.py 18083 &
+
+make build && make venv
+GATEWAY_PYTHON="$(pwd)/.venv/bin/python3" \
+  ./gateway --host 0.0.0.0 --port 1235 --config examples/config.yaml
+```
+
+In another:
+
+```bash
+curl -s http://localhost:1235/app1/       # plain pass-through
+curl -s http://localhost:1235/app2/       # {"...,"headers":{...,"X-Request-Id":"<uuid>",...}}
+curl -s http://localhost:1235/app3/       # same X-Request-Id, added via a two-handler chain
+curl -s http://localhost:1235/_           # discovery: lists app1, app2, app3
+```
 
 ## Writing a handler
 
