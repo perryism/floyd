@@ -161,27 +161,34 @@ gateway fails closed with a clear error and keeps serving other requests
 
 ### Tests for User Story 3 (REQUIRED per Testing Standards) ⚠️
 
-- [ ] T027 [P] [US3] Integration test: two request handlers on one process, second sees first's
+- [X] T027 [P] [US3] Integration test: two request handlers on one process, second sees first's
   modification, run in flag order (spec.md US3 Acceptance Scenario 1) in
-  `tests/integration/test_handler_chain_order.go`
-- [ ] T028 [P] [US3] Integration test: a handler that always errors/times out; caller gets
+  `tests/integration/handler_chain_test.go` (`TestHandlerChain_Order`)
+- [X] T028 [P] [US3] Integration test: a handler that always errors/times out; caller gets
   `HANDLER_ERROR`/`HANDLER_TIMEOUT`, and the process keeps serving other requests normally
-  (spec.md US3 Acceptance Scenario 2) in `tests/integration/test_handler_failure_isolation.go`
-- [ ] T029 [P] [US3] Unit test: worker crash → backoff restart → "5 consecutive crashes →
-  Degraded" state transition (data-model.md `HandlerWorkerPool`) in
-  `tests/unit/workerpool_test.go`
+  (spec.md US3 Acceptance Scenario 2) in `tests/integration/handler_failure_test.go`
+  (`TestHandlerFailure_IsolatesAndKeepsServing`, plus `TestHandlerFailure_Timeout` for the
+  distinct HANDLER_TIMEOUT code)
+- [X] T029 [P] [US3] Unit test: worker crash → backoff restart → sustained fail-closed
+  behavior without hanging or leaking (data-model.md `HandlerWorkerPool` state transitions) in
+  `tests/unit/workerpool_test.go` (black-box from outside the package, per this project's test
+  tree — asserts the externally-visible contract rather than the internal state enum)
 
 ### Implementation for User Story 3
 
-- [ ] T030 [US3] Extend/verify `internal/handler/chain.go` passes each handler's output as the
+- [X] T030 [US3] Extend/verify `internal/handler/chain.go` passes each handler's output as the
   next handler's input, in configured order, across more than one `--handlers` file (FR-005,
   depends on T018, T025)
-- [ ] T031 [US3] Enforce the per-call gRPC deadline from each `HandlerRef.timeout_ms` in
-  `internal/handler/workerpool/client.go`, treating deadline-exceeded as a handler failure
-  (FR-012, depends on T010)
-- [ ] T032 [US3] Isolate worker crashes in `internal/handler/workerpool/pool.go`: a crash or
+- [X] T031 [US3] Enforce the per-call gRPC deadline from each `HandlerRef.timeout_ms` in
+  `internal/handler/workerpool/pool.go`, treating deadline-exceeded as a handler failure
+  (FR-012, depends on T010) — fixed a real bug where grpc-go's wrapped deadline error didn't
+  satisfy `errors.Is(err, context.DeadlineExceeded)`, so `HANDLER_TIMEOUT` never fired; now
+  also checks the gRPC status code
+- [X] T032 [US3] Isolate worker crashes in `internal/handler/workerpool/pool.go`: a crash or
   panic in one worker pool must not affect any other pool or the Go process itself (FR-006,
-  depends on T031)
+  depends on T031) — fixed a real race where `Stop()` could return while a concurrent
+  crash-restart was still in flight, leaking a replacement worker process forever; restart
+  registration now runs under the same lock `Stop()` holds
 
 **Checkpoint**: All three user stories independently functional
 

@@ -11,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"api-gateway/internal/config"
 	"api-gateway/internal/handler/workerpool"
 	"api-gateway/internal/observability"
@@ -172,8 +175,12 @@ func logInvocation(requestID, handlerName string, dir observability.Direction, o
 // writeFailClosed renders a handler error/timeout using the standard error envelope,
 // implementing FR-012's fail-closed requirement.
 func writeFailClosed(w http.ResponseWriter, err error, handlerName string) {
+	// A context deadline exceeded locally (before the call even reaches gRPC) satisfies
+	// errors.Is directly, but grpc-go wraps a deadline hit during the RPC itself into its
+	// own *status.Error with codes.DeadlineExceeded, which does not unwrap to
+	// context.DeadlineExceeded — so both must be checked.
 	code := observability.CodeHandlerError
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded {
 		code = observability.CodeHandlerTimeout
 	}
 	observability.WriteError(w, code, "the configured handler failed to process this request", handlerName)

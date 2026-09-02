@@ -279,8 +279,22 @@ func (p *Pool) watch(w *worker) {
 		log.Printf("workerpool[%s]: worker crashed (count=%d), restarting in %s", p.name, crashCount, backoff)
 		time.Sleep(backoff)
 
+		// Holding p.mu for the whole check-then-spawn-then-register sequence makes it
+		// mutually exclusive with Stop() (which holds p.mu for its whole duration): either
+		// Stop() runs first and this goroutine observes stopped=true and gives up, or this
+		// goroutine registers the new worker into w first and Stop() (once it gets the
+		// lock) kills that fresh process too. A stopped.Load() check on its own isn't
+		// enough — Stop() could still land in the gap between the check and this goroutine
+		// finishing registration, leaving a replacement process nothing will ever stop.
+		p.mu.Lock()
+		if p.stopped.Load() {
+			p.mu.Unlock()
+			return
+		}
+
 		nw, err := p.startWorker(context.Background())
 		if err != nil {
+			p.mu.Unlock()
 			log.Printf("workerpool[%s]: failed to restart worker: %v", p.name, err)
 			w.mu.Lock()
 			w.state = stateCrashed
@@ -296,6 +310,7 @@ func (p *Pool) watch(w *worker) {
 		w.conn = nw.conn
 		w.client = nw.client
 		w.mu.Unlock()
+		p.mu.Unlock()
 	}
 }
 
