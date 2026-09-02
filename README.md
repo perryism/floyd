@@ -10,14 +10,22 @@ run multiple gateway processes — each independently configured.
 ## Running the gateway
 
 ```bash
-go build -o gateway ./cmd/gateway
-./gateway --dest http://127.0.0.1:1234 --host 0.0.0.0 --port 1235 --handlers ./handlers/v1.py
+make build
+make venv   # once, to create .venv with a matching handlers-sdk + protobuf install
+GATEWAY_PYTHON="$(pwd)/.venv/bin/python3" \
+  ./gateway --dest http://127.0.0.1:1234 --host 0.0.0.0 --port 1235 --handlers ./handlers/v1.py
 ```
 
 - `--dest`: the single backend this process proxies to.
 - `--host` / `--port`: where this gateway process itself listens.
 - `--handlers`: path to a Python handler file; repeat the flag to chain multiple, in order.
   Omit it entirely for plain pass-through proxying.
+- `GATEWAY_PYTHON`: the Python interpreter used to launch handler workers. Defaults to
+  whatever `python3` resolves to on `$PATH` — set this explicitly rather than relying on that
+  default, especially if `python3` happens to be a shared/pyenv/conda environment: the
+  generated gRPC stubs require `protobuf>=7.35`, and an unrelated environment satisfying some
+  other package's older pin will fail at startup with a `VersionError` (gencode vs. runtime
+  mismatch) rather than silently working.
 
 All configuration is resolved once at startup from these flags — there is no config file and
 no runtime handler-management API. Changing a route's handlers means restarting the process
@@ -25,10 +33,10 @@ with different flags.
 
 ## Writing a handler
 
-Install the SDK (from a checkout of this repo):
+Install the SDK into a local dev virtualenv (from a checkout of this repo):
 
 ```bash
-pip install -e ./handlers-sdk
+make venv
 ```
 
 ```python
@@ -65,28 +73,23 @@ feature's spec, plan, and design decisions.
 ## Development
 
 ```bash
-go build ./...
-go vet ./...
-GATEWAY_TEST_PYTHON=$(pwd)/.venv/bin/python3 go test ./...   # needs handlers-sdk installed into that venv
-
-ruff check handlers-sdk python
-pytest python/tests
+make build          # go build -o gateway ./cmd/gateway
+make test           # Go tests (spawns real Python workers) + the Python SDK's pytest suite
+make lint           # go vet + golangci-lint + ruff
+make fmt            # gofmt + ruff format (skips generated protobuf/grpc code)
+make venv           # create/refresh .venv with handlers-sdk installed in editable mode
 ```
+
+`golangci-lint` isn't installed by `make venv`/`make build` — install it separately
+(https://golangci-lint.run/welcome/install/) to run `make lint` locally; CI installs it for you.
 
 Regenerate the Go/Python gRPC stubs after editing `api/handler/v1/handler.proto`:
 
 ```bash
-protoc --go_out=. --go_opt=paths=source_relative \
-       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-       api/handler/v1/handler.proto
-
-python -m grpc_tools.protoc -I api/handler/v1 \
-       --python_out=handlers-sdk/gateway_handler_sdk/v1 \
-       --grpc_python_out=handlers-sdk/gateway_handler_sdk/v1 \
-       --pyi_out=handlers-sdk/gateway_handler_sdk/v1 \
-       api/handler/v1/handler.proto
+make proto
 ```
 
-`grpc_tools.protoc` generates `handler_pb2_grpc.py` with an absolute `import handler_pb2 as
-handler__pb2`, which breaks once the file lives inside the `gateway_handler_sdk.v1` package —
-change that one line to `from . import handler_pb2 as handler__pb2` after regenerating.
+This also fixes up `handler_pb2_grpc.py`'s import: `grpc_tools.protoc` generates it as an
+absolute `import handler_pb2 as handler__pb2`, which breaks once the file lives inside the
+`gateway_handler_sdk.v1` package, so `make proto` rewrites that one line to
+`from . import handler_pb2 as handler__pb2`. Review the diff before committing.
