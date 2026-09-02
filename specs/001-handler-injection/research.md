@@ -81,40 +81,138 @@ surface area — the handler only needs to see/modify the message, not dispatch 
 the raw HTTP bytes directly (rejected: forces every handler author to write their own HTTP
 parser instead of working with structured fields).
 
-## 5. Startup configuration format
+## 5. Startup configuration format (superseded — see §5r below)
 
-**Decision** (confirmed by the user's CLI example: `api-gateway --dest http://127.0.0.1:1234
---host 0.0.0.0 --port 1235 --handlers ./handlers/v1.py`): configuration is entirely command-line
-flags, resolved once at process startup — no config file. A single gateway process proxies to
-exactly **one** upstream destination (`--dest`), listening on `--host`/`--port`; there is no
-route table. To front multiple destinations, an operator runs multiple gateway processes (one
-per destination), each with its own listen address and handler chain. `--handlers` points to a
-Python module; the SDK loads it and registers whichever of `RequestHandler`/`ResponseHandler`
-it defines (a single file MAY implement both directions). `--handlers` is repeatable
-(`--handlers a.py --handlers b.py`) to chain multiple handler files in the given order (FR-005) —
-a reasonable default consistent with idiomatic Go flag parsing (`flag.Func` collecting into a
-slice), since the user's example showed only one file but FR-005 requires chaining support.
-The gateway fails to start if any `--handlers` file cannot be loaded, or if `--dest` is not a
-well-formed address — refusing to start beats silently falling back to bare pass-through.
+~~**Decision**: configuration is entirely command-line flags, resolved once at process
+startup — no config file. A single gateway process proxies to exactly **one** upstream
+destination (`--dest`); there is no route table. To front multiple destinations, an operator
+runs multiple gateway processes.~~
 
-**Rationale**: Directly implements FR-011 (handler wiring resolved from startup configuration,
-no runtime registration API), FR-005 (execution order = flag order), and matches the simpler
-single-destination shape revealed by the CLI — this is a per-destination sidecar/proxy, not a
-multi-tenant router.
+Superseded by the user's follow-up request for multiple named routes in one process,
+configured from a file. Kept here (struck through) rather than deleted, since the rejection of
+a config file in favor of CLI-only flags was itself a real decision worth a paper trail — the
+tradeoff reverses once the shape genuinely needs a route *table*, not just route-shaped flags.
 
-**Alternatives considered**: A YAML/JSON config file (this document's original decision, since
-superseded — rejected once the user specified plain CLI flags as the actual launch mechanism); a
-route table supporting multiple destinations per process (rejected — the CLI signature has
-exactly one `--dest`, no path-to-backend mapping, so multi-destination routing is out of scope
-for a single process).
+## 5r. Startup configuration format (revised)
+
+**Decision** (confirmed by the user's follow-up CLI/config example): `--host` and `--port`
+remain CLI flags (the gateway's own listen address), but `--dest` and `--handlers` are
+**removed** as top-level flags. In their place, `--config <path>` points to a YAML file
+listing one or more named routes, resolved once at gateway startup — still no runtime
+registration API (FR-011 unchanged, just now covering N routes instead of 1):
+
+```yaml
+- name: app1
+  description: this app is doing foo....
+  dest: http://localhost:3000
+- name: app2
+  description: ....
+  dest: http://localhost:3001
+  handlers: ./handlers/app1.py
+```
+
+- `name` (required, unique, no `/`): the route's identifier — also the first path segment
+  requests are matched against (§5s below) and the name used in logs/errors.
+- `description` (optional): free text for operators; the gateway itself never reads it.
+- `dest` (required): the backend this route proxies to.
+- `handlers` (optional): a single file path, or a YAML list of file paths, in the given order
+  (FR-005 chaining) — same semantics as the old repeatable `--handlers` flag, just scoped per
+  route instead of to the whole process. Omitted = pass-through for that route (FR-009).
+
+The gateway fails to start if `--config` is missing/unparseable, any route's `dest` isn't a
+well-formed address, any route's `handlers` file can't be loaded, or any route `name` is empty,
+duplicated, or contains `/` — same "fail fast rather than silently misconfigured" precedent as
+before.
+
+**Rationale**: A YAML *file* is the natural fit once the shape is "a list of routes," each with
+its own optional handler chain — expressing that as repeated flags (e.g. a
+`--route name=app1,dest=...,handlers=a.py,b.py` mini-DSL) would be far more awkward to write
+and parse correctly than a list of records. `--host`/`--port` stay CLI flags since they're a
+process-wide concern (where *this* gateway listens), not a per-route one.
+
+**Alternatives considered**: Keep `--dest`/`--handlers` as CLI flags alongside a new
+`--config`-based mode, supporting both (rejected — two parallel ways to configure the same
+thing adds real ongoing complexity for no current benefit; this is pre-release internal
+tooling with no external users depending on the old flags yet, so a clean breaking replacement
+is simpler than maintaining both indefinitely, per the constitution's Code Quality principle
+against speculative flexibility). JSON instead of YAML (rejected only for consistency with the
+project's earlier default; no functional difference).
+
+## 5s. Path-based routing
+
+**Decision** (confirmed with the user): the first path segment of an inbound request is
+matched, verbatim, against each configured route's `name` — `/app1/foo` matches route `app1`.
+The matched segment is **stripped** before forwarding: the backend receives `/foo` (or `/` if
+nothing remains, e.g. a request to exactly `/app1`). No match — including a request to `/`
+itself, or an unrecognized first segment — returns 404 with a new `ROUTE_NOT_FOUND` error code
+(see `contracts/error-format.md`).
+
+**Rationale**: Stripping the prefix means a backend never needs to know which path segment it
+happens to be mounted under in the gateway's routing table — the common convention for
+path-based ingress/API-gateway routing, and the option the user chose when asked.
+
+**Alternatives considered**: Forwarding the full, unmodified path (rejected by the user —
+would require every backend to be written aware of its own gateway-assigned prefix); matching
+by `Host` header / virtual-hosting instead of path segment (rejected — the user's example is
+explicitly path-based on one `host:port`).
+
+## 5t. Worker pool scoping under multiple routes
+
+**Decision**: a worker pool is now scoped to one `(route name, handler file)` pair, not
+globally to a handler file path across the whole process — even if two routes happen to
+reference the same file, each route gets its own independent pool of workers running that
+file.
+
+**Rationale**: Preserves FR-006 (isolate a failing/slow handler so it affects only requests
+that invoke it) at the new, finer grain: a shared pool would let route A's traffic exhaust or
+crash-loop workers that route B's traffic also depends on, even though A and B are otherwise
+unrelated. This is the same reasoning that ruled out a shared pool across unrelated routes
+before multi-route support existed, just re-applied now that "unrelated route" is a real
+in-process concept again.
+
+## 5u. Discovery endpoint (`/_`)
+
+**Decision**: a built-in, always-on endpoint at the exact path `/_` returns every configured
+route's `name` and `description` as JSON, in the order they appear in `--config`:
+
+```json
+{
+  "endpoints": [
+    {"name": "app1", "description": "this app is doing foo...."},
+    {"name": "app2", "description": "...."}
+  ]
+}
+```
+
+`_` becomes a **reserved** route `name` — the gateway fails to start if any configured route
+is literally named `_`, since that path now belongs to discovery. The endpoint responds the
+same way regardless of HTTP method (there's no meaningful body/side-effect distinction for a
+read-only listing), and is checked before normal route matching (one cheap string comparison
+per request, ahead of the O(1) map lookup — no measurable overhead per research.md §5s).
+
+**Rationale**: Directly what was asked — a way for a caller to discover what's available
+without reading `config.yaml` directly (e.g. a teammate hitting the gateway who doesn't have
+filesystem access to it). JSON matches the shape the gateway's other structured responses
+already use (`contracts/error-format.md`), rather than introducing a second, human-only format.
+
+**Alternatives considered**: Including `dest` in the listing (rejected — the ask was
+specifically "endpoints and the description"; exposing internal backend addresses to anyone
+who can reach the gateway is a small unnecessary information leak with no stated need); an
+HTML page instead of JSON (rejected — no stated need for a browsable UI, and it would be a
+second response format to keep consistent as routes change); making the endpoint
+configurable/toggleable (rejected as unwarranted complexity for a read-only listing with no
+sensitive fields — YAGNI).
 
 ## 6. Testing approach
 
 **Decision**: Three layers, per the constitution's Testing Standards principle: (a) contract
 tests validating the Go gRPC client and a reference Python worker against `handler.proto`; (b)
 integration tests running the real gateway binary against a stub backend and real (test) Python
-handlers, one per acceptance scenario in each user story; (c) unit tests for the Go-side CLI
-config parsing, proxy, chain-execution, and worker-pool supervisor logic in isolation.
+handlers, one per acceptance scenario in each user story, now including multi-route scenarios
+(two routes with independent handlers/backends, route-not-found, and the `/_` discovery
+listing); (c) unit tests for the
+Go-side YAML config parsing, path-based router, proxy, chain-execution, and worker-pool
+supervisor logic in isolation.
 
 **Rationale**: Matches FR-by-FR: contract tests cover FR-010/FR-011 (the handler boundary
 itself); integration tests cover FR-001–FR-005 and FR-009 (end-to-end proxy behavior); unit tests

@@ -1,217 +1,198 @@
 ---
 
-description: "Task list for Custom Request/Response Handler Injection"
+description: "Task list for Custom Request/Response Handler Injection — multi-route + discovery revision"
 ---
 
-# Tasks: Custom Request/Response Handler Injection
+# Tasks: Custom Request/Response Handler Injection (Multi-Route + Discovery Revision)
 
 **Input**: Design documents from `/specs/001-handler-injection/`
-**Prerequisites**: [plan.md](./plan.md), [spec.md](./spec.md), [research.md](./research.md), [data-model.md](./data-model.md), [contracts/](./contracts/), [quickstart.md](./quickstart.md)
+**Prerequisites**: [plan.md](./plan.md), [spec.md](./spec.md), [research.md](./research.md) (see
+§5r/§5s/§5t/§5u), [data-model.md](./data-model.md), [contracts/](./contracts/),
+[quickstart.md](./quickstart.md)
+
+**Supersedes** the original single-destination task list: US1–US3 were fully implemented and
+merged (see git history), then the plan was amended twice — multi-route support via a
+`--config` YAML file (research.md §5r/§5s/§5t) and a built-in `/_` discovery endpoint
+(research.md §5u). This list covers the delta: reworking the existing implementation for
+multiple named routes per process, plus the new discovery endpoint.
 
 **Tests**: Per this project's constitution (Testing Standards, NON-NEGOTIABLE), automated tests
-covering primary behavior and key edge cases are REQUIRED for all new functionality — every
-user story phase below includes its required tests, written and failing before implementation.
+covering primary behavior and key edge cases are REQUIRED — every phase below includes them.
 
-**Organization**: Tasks are grouped by user story (from spec.md) to enable independent
-implementation and testing of each story.
+**Organization**: Foundational tasks rework shared infrastructure (blocking); US1–US3 phases
+re-verify existing behavior still holds under the new router; a new cross-cutting phase covers
+multi-route dispatch and discovery, which aren't yet tied to a numbered spec.md user story (see
+Notes at the end).
 
-## Format: `[ID] [P?] [Story] Description`
+## Format: `[ID] [P?] [Story?] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)
-- **[Story]**: Which user story this task belongs to (US1, US2, US3)
-- Paths are relative to the repository root, per plan.md's Project Structure
+- **[Story]**: US1/US2/US3 for tasks re-verifying an existing user story; omitted for
+  Setup/Foundational/cross-cutting/Polish tasks, per the template's convention
+- Paths are relative to the repository root
 
 ---
 
-## Phase 1: Setup (Shared Infrastructure)
+## Phase 1: Setup
 
-**Purpose**: Repository scaffolding for the two-language (Go + Python) project
-
-- [X] T001 Initialize the Go module and create the package skeleton per plan.md's Project
-  Structure: `cmd/gateway/`, `internal/config/`, `internal/proxy/`, `internal/handler/`,
-  `internal/handler/workerpool/`, `internal/observability/`, `api/handler/v1/`
-- [X] T002 [P] Initialize the Python `handlers-sdk` package skeleton in
-  `handlers-sdk/gateway_handler_sdk/` with `pyproject.toml`, `__init__.py`
-- [X] T003 [P] Configure Go linting (`golangci-lint`) and Python linting (`ruff`) with CI gating
-  and no disabled checks, per Constitution Principle I (Code Quality)
-- [X] T004 [P] Set up CI to run `go test ./...` and `pytest` on every pull request with a
-  failing suite blocking merge, per Constitution Principle II (Testing Standards, NON-NEGOTIABLE)
-
-**Checkpoint**: Repository structure exists; CI enforces lint + tests on every PR
+- [X] T001 Promote `gopkg.in/yaml.v3` from an indirect to a direct dependency by importing it
+  in `internal/config` (T002) and running `go mod tidy` — it's already present transitively
+  (pulled in via another dependency) per `go.mod`
 
 ---
 
 ## Phase 2: Foundational (Blocking Prerequisites)
 
-**Purpose**: The Go↔Python handler boundary and core proxy — nothing in Phase 3+ works without this
+**Purpose**: Rework config loading and add path-based routing + discovery — every route's
+request handling depends on this
 
-**⚠️ CRITICAL**: No user story work can begin until this phase is complete
+**⚠️ CRITICAL**: No user-story or cross-cutting work below can start until this phase is done
 
-- [X] T005 Finalize `contracts/handler.proto` into `api/handler/v1/handler.proto` and generate
-  Go and Python stubs (`protoc`/`buf`) for the `Handler` service (`ProcessRequest`,
-  `ProcessResponse`)
-- [X] T006 [P] Implement CLI flag parsing into a `GatewayConfig` in `internal/config/config.go`:
-  `--dest`, `--host`, `--port`, repeatable `--handlers`; fail to start on a malformed `--dest`
-  or an unloadable `--handlers` file (FR-011, data-model.md `GatewayConfig` validation rules)
-- [X] T007 [P] Implement the core reverse-proxy in `internal/proxy/proxy.go` that forwards every
-  request to `GatewayConfig.dest` (FR-009 baseline pass-through when no handlers configured)
-- [X] T008 Implement the standard error envelope in `internal/observability/errors.go` per
-  `contracts/error-format.md`, including the `error.code` → HTTP status mapping table
-- [X] T009 [P] Implement `HandlerExecutionRecord` structured logging in
-  `internal/observability/log.go` (FR-008, data-model.md)
-- [X] T010 Implement the worker-pool supervisor in `internal/handler/workerpool/pool.go`: fixed
-  size per handler file (default = CPU core count), spawn-once-reuse-always, crash detection with
-  backoff restart, and "5 consecutive crashes → Degraded" (research.md §2, FR-006)
-- [X] T011 Implement the handler chain runner in `internal/handler/chain.go` that calls
-  `workerpool` in configured order, enforces a per-call gRPC deadline from each handler's
-  `timeout_ms`, and fails closed on any error/timeout into the standard error envelope
-  (FR-005, FR-012, depends on T008, T010)
-- [X] T012 [P] Implement the Python SDK server boilerplate in
-  `handlers-sdk/gateway_handler_sdk/server.py`: starts a gRPC server on a Unix domain socket and
-  dispatches to whichever of `RequestHandler`/`ResponseHandler` the loaded module defines
-  (depends on T005)
-- [X] T013 Wire `cmd/gateway/main.go`: parse flags into `GatewayConfig` (T006), start one worker
-  pool per distinct `--handlers` file (T010), start the proxy+chain (T007, T011), and listen on
-  `--host`:`--port` (depends on T006, T007, T010, T011)
+- [X] T002 Rewrite `internal/config/config.go`: replace the `--dest` flag and repeatable
+  `--handlers` flag with `--host`, `--port`, `--config <path>`; replace `GatewayConfig.Dest`/
+  `.Handlers` with `GatewayConfig.Routes []RouteConfig`; define
+  `RouteConfig{Name, Description string; Dest *url.URL; Handlers []HandlerRef}`; load and
+  YAML-unmarshal the `--config` file into `[]RouteConfig` (data-model.md `GatewayConfig`/
+  `RouteConfig`, research.md §5r, depends on T001)
+- [X] T003 [P] In `internal/config`, give a route's `handlers` YAML key a custom
+  `UnmarshalYAML` so it accepts either one scalar path or a list of paths, normalized into an
+  ordered `[]HandlerRef` (`Position` = list index, `TimeoutMS` = `DefaultHandlerTimeoutMS`
+  unless overridden) — same semantics as the old repeatable `--handlers` flag, scoped per route
+  (data-model.md `HandlerRef`, research.md §5r)
+- [X] T004 In `internal/config/config.go`, add validation, failing startup with a descriptive
+  error on: `--config` missing/unparseable; an empty `routes` list; a `RouteConfig.name` that's
+  empty, duplicated (case-sensitive), contains `/`, or equals `_` (reserved for discovery,
+  research.md §5u); a malformed `dest`; an unloadable `handlers` file (FR-011, data-model.md
+  `GatewayConfig`/`RouteConfig` validation rules, depends on T002)
+- [X] T005 Create `internal/router/router.go`: an `http.Handler` that (a) for the exact path
+  `/_`, on any HTTP method, writes the discovery JSON — every route's `name`/`description` in
+  config order, excluding `dest`/`handlers` (contracts/discovery.md) — before any route
+  matching happens; (b) otherwise matches the request's first path segment against configured
+  route names via an O(1) map lookup; (c) on a match, strips that segment (rewriting to `/` if
+  nothing remains) and delegates to that route's own `http.Handler`; (d) on no match (including
+  a request to `/` itself), writes `ROUTE_NOT_FOUND` (404) via the standard error envelope
+  (research.md §5s/§5u, data-model.md "Routing", depends on T002)
+- [X] T006 Update `internal/observability/errors.go`: add
+  `CodeRouteNotFound = "ROUTE_NOT_FOUND"` mapped to HTTP 404; add a `Route string`
+  (`json:"route,omitempty"`) field and make `Handler` (`json:"handler,omitempty"`) optional too,
+  so `ROUTE_NOT_FOUND` can omit both; update `WriteError`'s signature to take a route name
+  (contracts/error-format.md, contracts/discovery.md)
+- [X] T007 [P] Update `internal/observability/log.go`: add a `Route string` (`json:"route"`)
+  field to `HandlerExecutionRecord` (data-model.md `HandlerExecutionRecord`)
+- [X] T008 Update `internal/handler/chain.go`: add a route name to `Runner` (change
+  `NewRunner(forwarder *proxy.Forwarder, handlers []Handler) *Runner` to
+  `NewRunner(routeName string, forwarder *proxy.Forwarder, handlers []Handler) *Runner`) and
+  thread it through every `logInvocation`/`observability.WriteError` call site so records and
+  errors carry the correct route (FR-006 at the per-route grain, depends on T006, T007)
+- [X] T009 Rewrite `cmd/gateway/main.go`: parse `--host`/`--port`/`--config` (T002); for each
+  `RouteConfig`, start one `workerpool.Pool` per `HandlerRef` (name it `"<route>/<handler>"`
+  for clear logs — pools are already isolated per route simply by looping per `RouteConfig`,
+  since each loop iteration creates fresh `*workerpool.Pool` instances; no `workerpool` package
+  change needed, per research.md §5t); build that route's `handler.Runner` (T008); assemble an
+  `internal/router.Router` (T005) covering every route plus discovery; listen on
+  `--host`:`--port` (depends on T002, T005, T008)
 
-**Checkpoint**: A gateway binary exists that proxies to `--dest` and can run a configured
-handler chain — ready for user-story-specific behavior
-
----
-
-## Phase 3: User Story 1 - Register a custom request handler (Priority: P1) 🎯 MVP
-
-**Goal**: Let an operator inject a request handler that validates, enriches, or transforms an
-inbound request before it reaches the backend
-
-**Independent Test**: Launch the gateway with `--handlers` pointing to a handler that adds a
-header; send a request and confirm the backend receives it with the header added
-
-### Tests for User Story 1 (REQUIRED per Testing Standards) ⚠️
-
-> Write these tests FIRST; confirm they FAIL before implementing this phase
-
-- [X] T014 [P] [US1] Contract test for `ProcessRequest` (modify + reject shapes) against
-  `handler.proto` in `tests/contract/process_request_test.go`
-- [X] T015 [P] [US1] Integration test: request handler adds a header, backend receives it
-  (spec.md US1 Acceptance Scenario 1) in `tests/integration/request_handler_test.go`
-  (`TestRequestHandler_AddHeader`)
-- [X] T016 [P] [US1] Integration test: request handler rejects a request missing a required
-  field; backend is never called and caller gets `HANDLER_REJECTED_REQUEST` (spec.md US1
-  Acceptance Scenario 2) in `tests/integration/request_handler_test.go`
-  (`TestRequestHandler_RejectMissingField`)
-
-### Implementation for User Story 1
-
-- [X] T017 [P] [US1] Implement the `RequestHandler` base class and dispatch in
-  `handlers-sdk/gateway_handler_sdk/contracts.py` (FR-001, FR-010)
-- [X] T018 [US1] Wire `internal/handler/chain.go`'s request path: call each configured request
-  handler in order via `workerpool.ProcessRequest`, forward to the backend only if none reject
-  (FR-001, FR-003, depends on T011, T017)
-- [X] T019 [US1] Map a `Rejection` from `ProcessRequest` into the standard error envelope
-  (`HANDLER_REJECTED_REQUEST`, 400) in `internal/observability/errors.go` (FR-007, depends on T008)
-- [X] T020 [P] [US1] Add a reference handler at `examples/handlers/add_request_id.py` matching
-  quickstart.md, for manual verification
-
-**Checkpoint**: User Story 1 is fully functional and independently testable — this is the MVP
+**Checkpoint**: the gateway builds, loads a multi-route YAML config, and dispatches requests
+through the new router with correct per-route observability — ready to re-verify US1–US3
 
 ---
 
-## Phase 4: User Story 2 - Register a custom response handler (Priority: P2)
+## Phase 3: User Story 1 — Register a custom request handler (Priority: P1), re-verified under multi-route
 
-**Goal**: Let an operator inject a response handler that transforms, filters, or enriches the
-backend's response before it reaches the caller
+**Goal**: Confirm request-handler injection (spec.md US1) still works exactly as before, now
+routed through a named route instead of a process's single implicit destination
 
-**Independent Test**: Launch the gateway with `--handlers` pointing to a handler that removes a
-field from the backend's JSON response; confirm the caller doesn't see that field
+- [X] T010 [P] [US1] Rewrite `tests/testutil/gateway.go`'s `NewTestGateway`: replace the
+  `(t, backend *httptest.Server, refs []config.HandlerRef)` signature with one that builds a
+  full multi-route `internal/router.Router` from a list of
+  `{Name string; Backend *httptest.Server; Handlers []config.HandlerRef}` entries (depends on
+  T005, T008, T009's shapes)
+- [X] T011 [US1] Update `tests/integration/request_handler_test.go`'s
+  `TestRequestHandler_AddHeader` and `TestRequestHandler_RejectMissingField` to the new
+  `testutil.NewTestGateway` signature and route-prefixed URLs (e.g. `gw.URL + "/test/anything"`
+  instead of `gw.URL + "/anything"`); confirm both still pass (spec.md US1 Acceptance Scenarios
+  1–2, depends on T010)
 
-### Tests for User Story 2 (REQUIRED per Testing Standards) ⚠️
-
-- [X] T021 [P] [US2] Contract test for `ProcessResponse` (modify + reject shapes) against
-  `handler.proto` in `tests/contract/process_response_test.go`
-- [X] T022 [P] [US2] Integration test: response handler removes a field, caller doesn't see it
-  (spec.md US2 Acceptance Scenario 1) in `tests/integration/response_handler_test.go`
-  (`TestResponseHandler_RemoveField`)
-- [X] T023 [P] [US2] Integration test: response handler adds a header, caller receives it
-  (spec.md US2 Acceptance Scenario 2) in `tests/integration/response_handler_test.go`
-  (`TestResponseHandler_AddHeader`)
-
-### Implementation for User Story 2
-
-- [X] T024 [P] [US2] Implement the `ResponseHandler` base class and dispatch in
-  `handlers-sdk/gateway_handler_sdk/contracts.py` (FR-002, FR-010)
-- [X] T025 [US2] Wire `internal/handler/chain.go`'s response path: call each configured response
-  handler in order via `workerpool.ProcessResponse` before returning to the caller
-  (FR-002, FR-004, depends on T011, T024)
-- [X] T026 [US2] Map a `Rejection` from `ProcessResponse` into the standard error envelope
-  (`HANDLER_REJECTED_RESPONSE`, 502) in `internal/observability/errors.go` (FR-007, depends on T008)
-
-**Checkpoint**: User Stories 1 AND 2 both work independently
+**Checkpoint**: US1 re-verified end-to-end through the new router
 
 ---
 
-## Phase 5: User Story 3 - Chain multiple handlers and fail gracefully (Priority: P3)
+## Phase 4: User Story 2 — Register a custom response handler (Priority: P2), re-verified under multi-route
 
-**Goal**: Support multiple chained handlers per direction with a predictable order, and isolate
-a failing/slow handler so it can't take down the gateway process
+- [X] T012 [P] [US2] Update `tests/integration/response_handler_test.go`'s
+  `TestResponseHandler_RemoveField` and `TestResponseHandler_AddHeader` to the new
+  `testutil.NewTestGateway` signature and route-prefixed URLs; confirm both still pass (spec.md
+  US2 Acceptance Scenarios 1–2, depends on T010)
+- [X] T013 [P] [US2] Spot-check `tests/contract/process_response_test.go` for any dependency on
+  removed `config`/`workerpool` shapes — the Go↔Python contract itself doesn't change with
+  routing, so this should need no code changes, only confirmation it still passes
 
-**Independent Test**: Configure two request handlers where the second depends on the first's
-output; confirm registration order. Then configure a handler that always fails; confirm the
-gateway fails closed with a clear error and keeps serving other requests
-
-### Tests for User Story 3 (REQUIRED per Testing Standards) ⚠️
-
-- [X] T027 [P] [US3] Integration test: two request handlers on one process, second sees first's
-  modification, run in flag order (spec.md US3 Acceptance Scenario 1) in
-  `tests/integration/handler_chain_test.go` (`TestHandlerChain_Order`)
-- [X] T028 [P] [US3] Integration test: a handler that always errors/times out; caller gets
-  `HANDLER_ERROR`/`HANDLER_TIMEOUT`, and the process keeps serving other requests normally
-  (spec.md US3 Acceptance Scenario 2) in `tests/integration/handler_failure_test.go`
-  (`TestHandlerFailure_IsolatesAndKeepsServing`, plus `TestHandlerFailure_Timeout` for the
-  distinct HANDLER_TIMEOUT code)
-- [X] T029 [P] [US3] Unit test: worker crash → backoff restart → sustained fail-closed
-  behavior without hanging or leaking (data-model.md `HandlerWorkerPool` state transitions) in
-  `tests/unit/workerpool_test.go` (black-box from outside the package, per this project's test
-  tree — asserts the externally-visible contract rather than the internal state enum)
-
-### Implementation for User Story 3
-
-- [X] T030 [US3] Extend/verify `internal/handler/chain.go` passes each handler's output as the
-  next handler's input, in configured order, across more than one `--handlers` file (FR-005,
-  depends on T018, T025)
-- [X] T031 [US3] Enforce the per-call gRPC deadline from each `HandlerRef.timeout_ms` in
-  `internal/handler/workerpool/pool.go`, treating deadline-exceeded as a handler failure
-  (FR-012, depends on T010) — fixed a real bug where grpc-go's wrapped deadline error didn't
-  satisfy `errors.Is(err, context.DeadlineExceeded)`, so `HANDLER_TIMEOUT` never fired; now
-  also checks the gRPC status code
-- [X] T032 [US3] Isolate worker crashes in `internal/handler/workerpool/pool.go`: a crash or
-  panic in one worker pool must not affect any other pool or the Go process itself (FR-006,
-  depends on T031) — fixed a real race where `Stop()` could return while a concurrent
-  crash-restart was still in flight, leaking a replacement worker process forever; restart
-  registration now runs under the same lock `Stop()` holds
-
-**Checkpoint**: All three user stories independently functional
+**Checkpoint**: US2 re-verified end-to-end through the new router
 
 ---
 
-## Phase 6: Polish & Cross-Cutting Concerns
+## Phase 5: User Story 3 — Chain multiple handlers and fail gracefully (Priority: P3), re-verified and extended for multi-route isolation
 
-**Purpose**: Improvements that span all user stories
+- [X] T014 [P] [US3] Update `tests/integration/handler_chain_test.go`'s
+  `TestHandlerChain_Order` and `handler_failure_test.go`'s
+  `TestHandlerFailure_IsolatesAndKeepsServing`/`TestHandlerFailure_Timeout` to the new
+  `testutil.NewTestGateway` signature and route-prefixed URLs; confirm all still pass (spec.md
+  US3 Acceptance Scenarios 1–2, depends on T010)
+- [X] T015 [P] [US3] New integration test `tests/integration/handler_isolation_multiroute_test.go`:
+  configure two routes that both reference the *same* handler file (e.g.
+  `tests/fixtures/always_fail.py`); confirm one route's requests fail closed while the other
+  route's requests — through the same file — keep succeeding, proving worker pools are scoped
+  per `(route, file)`, not shared (research.md §5t, extends FR-006, depends on T009, T010)
 
-- [X] T033 [P] Write handler-authoring docs in `README.md`, adapted from quickstart.md
-- [X] T034 Run quickstart.md's manual verification end-to-end against a real backend (done
-  manually during Foundational implementation, and now covered continuously by
-  `tests/integration`)
-- [X] T035 [P] Unit tests for `internal/config` validation edge cases (malformed `--dest`,
-  missing `--handlers` file) in `tests/unit/config_test.go`
-- [X] T036 Load/benchmark test validating the Performance Requirements budget: baseline proxy
-  ≤5ms p95 overhead, ≤20ms p95 per configured handler (SC-004), per Constitution Principle IV
-  in `tests/integration/performance_test.go` — measured ~44µs baseline overhead and ~839µs
-  per-handler overhead locally, well within budget (a sanity check, not a load test)
-- [X] T037 [P] Verify the worker-pool Unix domain socket is not network-exposed and has
-  restrictive file permissions in `tests/unit/workerpool_security_test.go` — found and fixed a
-  real gap: the socket file's own permissions depend on the worker process's umask, so it now
-  lives in a fresh private (0700) directory instead of directly in the shared temp dir
+**Checkpoint**: US3 re-verified, including the new per-route pool isolation guarantee
+
+---
+
+## Phase 6: Multi-Route Dispatch & Discovery (cross-cutting — see Notes)
+
+**Goal**: Verify the two new capabilities this plan revision actually added: serving several
+independent routes from one process, and discovering them via `/_`
+
+**Independent Test**: Configure two routes with two distinct backends; confirm each is reached
+independently at its own path prefix, an unconfigured prefix 404s, and `/_` lists both by name
+and description.
+
+- [X] T016 [P] Integration test `tests/integration/multiroute_test.go`: two routes, two
+  distinct stub backends, one gateway process — confirm `/routeA/...` and `/routeB/...` each
+  reach their own backend with the matched segment stripped (`/routeA/foo` → backend `/foo`),
+  independently of each other (research.md §5s, depends on T009, T010)
+- [X] T017 [P] Integration test for `GET /_` (and one other method, e.g. `POST /_`, to confirm
+  method-independence) returning the discovery JSON — every configured route's `name` and
+  `description`, in config order, with `dest`/`handlers` absent (contracts/discovery.md,
+  depends on T009)
+- [X] T018 [P] Integration test for `ROUTE_NOT_FOUND`: a request to an unconfigured first path
+  segment, and a request to `/` itself, both return 404 with the standard error envelope and
+  `error.route`/`error.handler` omitted (contracts/error-format.md, depends on T005, T006)
+- [X] T019 [P] Rewrite `tests/unit/config_test.go` for the new YAML-based `Parse`: a valid
+  multi-route file; missing/unparseable `--config`; an empty `routes` list; a duplicate route
+  `name`; a `name` containing `/`; a `name` equal to `_`; a malformed `dest`; an unloadable
+  `handlers` file; `handlers` given as a scalar string vs. as a list, both normalized correctly
+  with `Position` in list order (depends on T002, T003, T004)
+- [X] T020 [P] New unit test `tests/unit/router_test.go` for `internal/router`: first-segment
+  matching; prefix-stripping including the "nothing remains → `/`" case; discovery taking
+  precedence over route matching; `ROUTE_NOT_FOUND` on no match (depends on T005)
+
+**Checkpoint**: multi-route dispatch and discovery are fully covered, independently of US1–US3
+
+---
+
+## Phase 7: Polish & Cross-Cutting Concerns
+
+- [X] T021 [P] Update `README.md`'s "Running the gateway" section: replace the removed
+  `--dest`/`--handlers` example with `--host`/`--port`/`--config` and a `config.yaml` snippet,
+  matching `quickstart.md`
+- [X] T022 [P] Update `tests/integration/performance_test.go` to the new
+  `testutil.NewTestGateway` signature; confirm the ≤5ms/≤20ms p95 budgets (SC-004) still hold
+  with route matching in the hot path (depends on T010)
+- [X] T023 [P] Run `tests/unit/workerpool_security_test.go` unmodified and confirm it still
+  passes — the `workerpool.Pool` API itself is unchanged by this revision
+- [X] T024 Run `make lint` (`go vet` + `golangci-lint` + `ruff`) and `make test` end-to-end;
+  fix anything the rework surfaces
 
 ---
 
@@ -220,67 +201,55 @@ gateway fails closed with a clear error and keeps serving other requests
 ### Phase Dependencies
 
 - **Setup (Phase 1)**: No dependencies — start immediately
-- **Foundational (Phase 2)**: Depends on Setup — BLOCKS all user stories
-- **User Stories (Phase 3-5)**: All depend on Foundational completion
-  - User Story 1 (P1): No dependency on US2/US3 — this is the MVP
-  - User Story 2 (P2): No functional dependency on US1, but shares `chain.go`/`errors.go`, so
-    sequence after US1 in a single-developer flow to avoid merge conflicts
-  - User Story 3 (P3): Builds on the chain/worker-pool machinery exercised by US1 and US2
-- **Polish (Phase 6)**: Depends on all desired user stories being complete
+- **Foundational (Phase 2)**: Depends on Setup — BLOCKS everything below
+- **US1/US2/US3 (Phases 3–5)**: All depend on Foundational, and specifically on T010 (the
+  rewritten test harness) before their test updates can compile
+- **Cross-cutting (Phase 6)**: Depends on Foundational; independent of US1–US3, so it can run
+  in parallel with Phases 3–5 if staffed separately
+- **Polish (Phase 7)**: Depends on everything above being in place
 
-### Within Each User Story
+### Within Foundational
 
-- Tests MUST be written and FAIL before implementation (Constitution Principle II)
-- SDK/contract classes before chain wiring
-- Chain wiring before error-mapping polish
-- Story complete and independently verified before moving to the next priority
+T002 → T003, T004 (same file, `internal/config/config.go`) must be sequential; T005 (new file)
+and T007 (different file) can run in parallel with T002's early work but T008/T009 depend on
+T005/T006/T007/T002 all landing first.
 
 ### Parallel Opportunities
 
-- All Setup tasks marked [P] (T002-T004) can run in parallel once T001 exists
-- T006, T007, T009, T012 (Foundational, different files/languages) can run in parallel; T005 →
-  T010 → T011 → T013 are sequential
-- All tests within a user story phase marked [P] can run in parallel with each other
-- T014/T015/T016 (US1 tests) can run in parallel with T021/T022/T023 (US2 tests) if staffed by
-  different developers, since Foundational is already complete
-
----
-
-## Parallel Example: User Story 1
-
-```bash
-# Launch all tests for User Story 1 together:
-Task: "Contract test for ProcessRequest in tests/contract/test_process_request.go"
-Task: "Integration test: request handler adds a header in tests/integration/test_request_handler_add_header.go"
-Task: "Integration test: request handler rejects a request in tests/integration/test_request_handler_reject.go"
-```
+- T003 can run alongside T005–T007 (different packages)
+- T007 (log.go) can run alongside T006 (errors.go) — different files in the same package, no
+  shared state
+- Once T010 lands, T011/T012/T014 (US1/US2/US3 test updates) can all run in parallel — each
+  touches a different test file
+- All of Phase 6 (T016–T020) can run in parallel with Phases 3–5 once Foundational is done
 
 ---
 
 ## Implementation Strategy
 
-### MVP First (User Story 1 Only)
+### Minimum to unblock everything
 
-1. Complete Phase 1: Setup
-2. Complete Phase 2: Foundational (CRITICAL — blocks all stories)
-3. Complete Phase 3: User Story 1
-4. **STOP and VALIDATE**: run the Independent Test for US1 against a real backend
-5. Ship the MVP: request-handler injection only
+1. Complete Phase 1 (trivial) and Phase 2 (Foundational) — this is the actual rework; nothing
+   else compiles against the new shapes until it's done
+2. Land T010 (test harness rewrite) immediately after — every other test file depends on it
 
-### Incremental Delivery
+### Then, in any order / in parallel
 
-1. Setup + Foundational → binary proxies with no handlers (FR-009 baseline)
-2. Add User Story 1 → validate independently → ship (MVP)
-3. Add User Story 2 → validate independently → ship
-4. Add User Story 3 → validate independently → ship
-5. Each story adds value without breaking the previous ones
+3. Re-verify US1, US2, US3 (Phases 3–5) — mechanical updates confirming nothing regressed
+4. Build out Phase 6 — the actual new capabilities this revision was for
+5. Phase 7 to close out (docs, performance/security re-confirmation, full lint+test pass)
 
 ---
 
 ## Notes
 
+- Phase 6's tasks aren't tied to a numbered spec.md user story: multi-route support and the
+  `/_` discovery endpoint were introduced directly through two `/speckit-plan` amendments, not
+  through `/speckit-specify`/`/speckit-clarify`. If you want them as formally traceable as
+  US1–US3, consider a follow-up spec amendment (e.g. an FR-013 and a short user story) — not
+  done here since it wasn't asked for.
+- Every existing US1/US2/US3 integration test needs a route-name prefix added to its request
+  URLs — there is no more "no route configured" mode; every request now needs a route to match.
 - [P] tasks touch different files with no unmet dependency — safe to parallelize
-- [Story] label maps each task to its user story for traceability
-- Verify each REQUIRED test fails before implementing the task that makes it pass
-- Commit after each task or logical group
-- Stop at any checkpoint to validate a story independently before continuing
+- Verify each REQUIRED test fails (or doesn't compile) before the rework, and passes after
+- Commit after each phase or logical group

@@ -25,10 +25,12 @@ const (
 )
 
 // HandlerExecutionRecord is one log entry per handler invocation, for observability and
-// troubleshooting (FR-008, data-model.md). It has no "route" field: a single process serves
-// exactly one destination, so that would be constant within a process's own logs.
+// troubleshooting (FR-008, data-model.md). Route is reintroduced now that a process serves
+// multiple routes (research.md §5r) — it was previously omitted as constant when a process
+// served exactly one destination.
 type HandlerExecutionRecord struct {
 	RequestID  string    `json:"request_id"`
+	Route      string    `json:"route"`
 	Handler    string    `json:"handler_name"`
 	Direction  Direction `json:"direction"`
 	Outcome    Outcome   `json:"outcome"`

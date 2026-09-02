@@ -1,25 +1,38 @@
 # api-gateway
 
-A single-destination reverse proxy with a configurable chain of Python request/response
-handlers. The core gateway is Go; handlers are Python, run as supervised local worker
-processes the gateway talks to over gRPC.
-
-One gateway process proxies to exactly one backend (`--dest`). To front multiple backends,
-run multiple gateway processes — each independently configured.
+A reverse proxy serving one or more named routes, each with its own destination and an
+optional chain of Python request/response handlers. The core gateway is Go; handlers are
+Python, run as supervised local worker processes the gateway talks to over gRPC.
 
 ## Running the gateway
 
 ```bash
 make build
 make venv   # once, to create .venv with a matching handlers-sdk + protobuf install
-GATEWAY_PYTHON="$(pwd)/.venv/bin/python3" \
-  ./gateway --dest http://127.0.0.1:1234 --host 0.0.0.0 --port 1235 --handlers ./handlers/v1.py
 ```
 
-- `--dest`: the single backend this process proxies to.
+```yaml
+# config.yaml
+- name: app1
+  description: The public orders API.
+  dest: http://localhost:3000
+- name: app2
+  description: Internal admin service.
+  dest: http://localhost:3001
+  handlers: ./handlers/app1.py
+```
+
+```bash
+GATEWAY_PYTHON="$(pwd)/.venv/bin/python3" \
+  ./gateway --host 0.0.0.0 --port 1235 --config ./config.yaml
+```
+
 - `--host` / `--port`: where this gateway process itself listens.
-- `--handlers`: path to a Python handler file; repeat the flag to chain multiple, in order.
-  Omit it entirely for plain pass-through proxying.
+- `--config`: path to a YAML file listing every route this process serves. Each route has a
+  `name` (also its first path segment — `/app1/...` routes to `app1`, with that segment
+  stripped before forwarding), a `dest`, an optional `description` (for operators; the gateway
+  never reads it), and optional `handlers` (one path, or a list to chain several in order —
+  omit for plain pass-through on that route).
 - `GATEWAY_PYTHON`: the Python interpreter used to launch handler workers. Defaults to
   whatever `python3` resolves to on `$PATH` — set this explicitly rather than relying on that
   default, especially if `python3` happens to be a shared/pyenv/conda environment: the
@@ -27,9 +40,10 @@ GATEWAY_PYTHON="$(pwd)/.venv/bin/python3" \
   other package's older pin will fail at startup with a `VersionError` (gencode vs. runtime
   mismatch) rather than silently working.
 
-All configuration is resolved once at startup from these flags — there is no config file and
-no runtime handler-management API. Changing a route's handlers means restarting the process
-with different flags.
+All configuration is resolved once at startup from these flags — there is no runtime
+route/handler-management API. Changing routes means editing `config.yaml` and restarting.
+A built-in `GET /_` endpoint lists every configured route's name and description, for
+discovery.
 
 ## Writing a handler
 
@@ -59,12 +73,12 @@ Returning a `Rejection(error_code, message)` stops the request (or response) ins
 forwarding it, and produces the gateway's standard error envelope:
 
 ```json
-{"error": {"code": "MISSING_FIELD", "message": "...", "handler": "add-request-id"}}
+{"error": {"code": "MISSING_FIELD", "message": "...", "route": "app1", "handler": "add-request-id"}}
 ```
 
 A handler that errors or exceeds its timeout (default 100ms) fails the same way — the gateway
-always fails closed, and one broken handler can't affect other requests or other gateway
-processes.
+always fails closed, and one broken handler can't affect other requests on that route, other
+routes, or other gateway processes.
 
 See [specs/001-handler-injection/quickstart.md](specs/001-handler-injection/quickstart.md) for
 a full walkthrough, and [specs/001-handler-injection/](specs/001-handler-injection/) for the

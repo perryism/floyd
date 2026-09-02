@@ -26,11 +26,15 @@ func newJSONBackend(t *testing.T, body string) *httptest.Server {
 // response; the caller doesn't see it, and the backend's own response is unaffected.
 func TestResponseHandler_RemoveField(t *testing.T) {
 	backend := newJSONBackend(t, `{"visible":"yes","secret":"shh"}`)
-	gw := testutil.NewTestGateway(t, backend, []config.HandlerRef{
-		{Name: "remove-field", FilePath: "../fixtures/remove_field.py", TimeoutMS: 2000},
-	})
+	gw := testutil.NewTestGateway(t, []testutil.TestRoute{{
+		Name:    testRouteName,
+		Backend: backend,
+		Handlers: []config.HandlerRef{
+			{Name: "remove-field", FilePath: "../fixtures/remove_field.py", TimeoutMS: 2000},
+		},
+	}})
 
-	resp, err := http.Get(gw.URL + "/anything")
+	resp, err := http.Get(gw.URL + "/" + testRouteName + "/anything")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -55,11 +59,15 @@ func TestResponseHandler_RemoveField(t *testing.T) {
 // US2 acceptance scenario 2: a response handler adds a header; the caller receives it.
 func TestResponseHandler_AddHeader(t *testing.T) {
 	backend := newJSONBackend(t, `{}`)
-	gw := testutil.NewTestGateway(t, backend, []config.HandlerRef{
-		{Name: "add-response-header", FilePath: "../fixtures/add_response_header.py", TimeoutMS: 2000},
-	})
+	gw := testutil.NewTestGateway(t, []testutil.TestRoute{{
+		Name:    testRouteName,
+		Backend: backend,
+		Handlers: []config.HandlerRef{
+			{Name: "add-response-header", FilePath: "../fixtures/add_response_header.py", TimeoutMS: 2000},
+		},
+	}})
 
-	resp, err := http.Get(gw.URL + "/anything")
+	resp, err := http.Get(gw.URL + "/" + testRouteName + "/anything")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}

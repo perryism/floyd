@@ -19,12 +19,16 @@ func TestHandlerChain_Order(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	gw := testutil.NewTestGateway(t, backend, []config.HandlerRef{
-		{Name: "append-a", FilePath: "../fixtures/append_suffix_a.py", TimeoutMS: 2000},
-		{Name: "append-b", FilePath: "../fixtures/append_suffix_b.py", TimeoutMS: 2000},
-	})
+	gw := testutil.NewTestGateway(t, []testutil.TestRoute{{
+		Name:    testRouteName,
+		Backend: backend,
+		Handlers: []config.HandlerRef{
+			{Name: "append-a", FilePath: "../fixtures/append_suffix_a.py", TimeoutMS: 2000},
+			{Name: "append-b", FilePath: "../fixtures/append_suffix_b.py", TimeoutMS: 2000},
+		},
+	}})
 
-	resp, err := http.Get(gw.URL + "/anything")
+	resp, err := http.Get(gw.URL + "/" + testRouteName + "/anything")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}

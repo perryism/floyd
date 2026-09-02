@@ -23,7 +23,7 @@ func TestPerformance_BaselineProxyOverhead(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	gw := testutil.NewTestGateway(t, backend, nil)
+	gw := testutil.NewTestGateway(t, []testutil.TestRoute{{Name: testRouteName, Backend: backend}})
 	client := gw.Client()
 
 	backendLatency := measureP95(t, sampleCount, func() {
@@ -34,7 +34,7 @@ func TestPerformance_BaselineProxyOverhead(t *testing.T) {
 		resp.Body.Close()
 	})
 	gatewayLatency := measureP95(t, sampleCount, func() {
-		resp, err := client.Get(gw.URL)
+		resp, err := client.Get(gw.URL + "/" + testRouteName)
 		if err != nil {
 			t.Fatalf("gateway request failed: %v", err)
 		}
@@ -54,20 +54,24 @@ func TestPerformance_PerHandlerOverhead(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	baseline := testutil.NewTestGateway(t, backend, nil)
-	withHandler := testutil.NewTestGateway(t, backend, []config.HandlerRef{
-		{Name: "add-header", FilePath: "../fixtures/add_header.py", TimeoutMS: 2000},
-	})
+	baseline := testutil.NewTestGateway(t, []testutil.TestRoute{{Name: testRouteName, Backend: backend}})
+	withHandler := testutil.NewTestGateway(t, []testutil.TestRoute{{
+		Name:    testRouteName,
+		Backend: backend,
+		Handlers: []config.HandlerRef{
+			{Name: "add-header", FilePath: "../fixtures/add_header.py", TimeoutMS: 2000},
+		},
+	}})
 
 	baselineLatency := measureP95(t, sampleCount, func() {
-		resp, err := http.Get(baseline.URL)
+		resp, err := http.Get(baseline.URL + "/" + testRouteName)
 		if err != nil {
 			t.Fatalf("baseline gateway request failed: %v", err)
 		}
 		resp.Body.Close()
 	})
 	handlerLatency := measureP95(t, sampleCount, func() {
-		resp, err := http.Get(withHandler.URL)
+		resp, err := http.Get(withHandler.URL + "/" + testRouteName)
 		if err != nil {
 			t.Fatalf("gateway-with-handler request failed: %v", err)
 		}

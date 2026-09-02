@@ -1,51 +1,86 @@
 # Data Model: Custom Request/Response Handler Injection
 
 **Input**: [spec.md](./spec.md) Key Entities, resolved against [research.md](./research.md)
+(see research.md §5r/§5s/§5t for the multi-route revision this version reflects)
 
 ## GatewayConfig
 
-The whole process's configuration, resolved once from CLI flags at startup (FR-011). One
-instance per running gateway process — there is no route table; a process proxies to exactly
-one destination (confirmed by the CLI example: `--dest`/`--host`/`--port`/`--handlers`).
-Multiple destinations are served by running multiple gateway processes, each with its own
-`GatewayConfig`.
+The whole process's configuration, resolved once at startup (FR-011): `--host`/`--port` from
+CLI flags, plus one or more named routes loaded from the YAML file at `--config`. One instance
+per running gateway process; a process now serves as many routes as its config file lists
+(previously exactly one — see research.md §5/§5r).
 
 | Field | Type | Notes |
 |---|---|---|
 | `listen_host` | string | From `--host` |
 | `listen_port` | int | From `--port` |
-| `dest` | URL | From `--dest`; the single backend this process proxies to |
-| `request_handlers` | list[HandlerRef] | Ordered by `--handlers` flag order; run before proxying (FR-001, FR-005) |
-| `response_handlers` | list[HandlerRef] | Ordered by `--handlers` flag order; run after the backend responds (FR-002, FR-005) |
+| `routes` | list[RouteConfig] | Loaded from the `--config` YAML file, in file order |
+
+**Validation rules**:
+- `--config` MUST point to a parseable YAML file, or the gateway fails to start.
+- `routes` MUST be non-empty — a `--config` file listing zero routes is treated as a startup
+  error, not an empty-but-valid gateway (there would be nothing for it to do).
+- Every `RouteConfig.name` MUST be unique across the file (case-sensitive) — the gateway fails
+  to start on a duplicate rather than silently using whichever loaded last.
+- No `RouteConfig.name` MAY be exactly `_` — that path is reserved for the discovery endpoint
+  (research.md §5u).
+
+## RouteConfig
+
+One entry in the YAML config file — a named destination with its own optional handler chain.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Required, non-empty, unique, MUST NOT contain `/`, MUST NOT be exactly `_` (reserved for the discovery endpoint, research.md §5u) — also the first path segment requests are matched against (FR-001/FR-002 now apply per-route; see "Routing" below) |
+| `description` | string | Optional free text for operators; the gateway itself never reads it |
+| `dest` | URL | Required; the backend this route proxies to |
+| `handlers` | list[HandlerRef] | Optional; from the YAML `handlers` key, which accepts either one scalar path or a list, normalized to an ordered list here (FR-005) |
 
 **Validation rules**:
 - `dest` MUST be a well-formed address; the gateway fails to start otherwise.
-- Each `HandlerRef.file_path` (from `--handlers`) MUST resolve to a loadable handler at startup,
-  or the gateway fails to start (research.md §5) — a process is never silently left without a
-  handler it was configured to have.
-- A given `--handlers` file MAY implement a request handler, a response handler, or both; each
-  is added to the corresponding ordered list in the flag's position.
-- A process launched with no `--handlers` flags behaves as baseline pass-through proxying
-  (FR-009).
+- Each `HandlerRef.file_path` MUST resolve to a loadable handler at startup, or the gateway
+  fails to start (research.md §5r) — a route is never silently left without a handler it was
+  configured to have.
+- A route with no `handlers` behaves as baseline pass-through proxying for that route (FR-009).
+
+## Routing
+
+Not a persisted entity, but the request-time behavior tying `RouteConfig.name` to inbound
+requests (research.md §5s):
+
+- The first path segment of an inbound request (`/app1/foo` → `app1`) is looked up against the
+  configured routes by exact `name` match (O(1) map lookup — route count doesn't affect
+  per-request latency).
+- On a match, that segment is stripped before forwarding: `/app1/foo` → backend request `/foo`;
+  `/app1` alone → backend request `/`.
+- On no match (including a request to `/` itself), the gateway responds 404 with the
+  `ROUTE_NOT_FOUND` error code (`contracts/error-format.md`) — no handler chain runs, since
+  there is no route to run one for.
+- The exact path `/_` is checked first, ahead of route matching, and always returns the
+  discovery listing (research.md §5u, `contracts/discovery.md`) regardless of HTTP method —
+  it is not itself a route and never proxies anywhere.
 
 ## HandlerRef
 
-One entry in the process's ordered handler list, derived from one `--handlers` flag occurrence.
+One entry in a route's ordered handler list, derived from that route's `handlers` YAML value.
 
 | Field | Type | Notes |
 |---|---|---|
 | `name` | string | Human-readable identifier, used in logs and error messages |
 | `file_path` | string | Path to the Python module implementing this handler (FR-010, FR-011) |
 | `timeout_ms` | int | Per-call timeout; defaults to 100 if unspecified (research.md §3) |
-| `position` | int | Index given by `--handlers` flag order; execution order (FR-005) |
+| `position` | int | Index within this route's `handlers` list; execution order (FR-005) |
 
 ## HandlerWorkerPool (runtime, not persisted)
 
-One per distinct `file_path` passed via `--handlers`. Not written to disk; exists only in the
+One per distinct `(route name, file_path)` pair (research.md §5t) — even if two routes
+reference the same handler file, each gets its own pool, so a crash-prone handler on one route
+can't degrade another route's supply of workers. Not written to disk; exists only in the
 running gateway process.
 
 | Field | Type | Notes |
 |---|---|---|
+| `route_name` | string | Which route this pool belongs to |
 | `file_path` | string | The handler file this pool serves |
 | `size` | int | Fixed at startup; default = CPU core count (research.md §2) |
 | `workers` | list[WorkerState] | One entry per pooled process |
@@ -62,17 +97,15 @@ the gateway itself at request time.
 | Field | Type | Notes |
 |---|---|---|
 | `request_id` | string | Correlates all records for one inbound request |
+| `route` | string | `RouteConfig.name` this request matched — reintroduced now that a process serves multiple routes; previously omitted as constant when a process served exactly one destination |
 | `handler_name` | string | From `HandlerRef.name` |
 | `direction` | enum(`request`,`response`) | Which chain this invocation belongs to |
 | `outcome` | enum(`passed`,`modified`,`rejected`,`errored`) | Per FR-008 |
 | `duration_ms` | int | Wall-clock time of the call, including IPC overhead |
 | `timestamp` | datetime | When the invocation completed |
 
-No `route` field: a single process serves exactly one `dest`, so it would be constant within a
-process's logs — the process's own identity (host:port it listens on) already disambiguates
-logs across instances.
-
-**Relationships**: `GatewayConfig` 1—* `HandlerRef` (via `request_handlers` / `response_handlers`);
-`HandlerRef` *—1 `HandlerWorkerPool` (multiple refs, e.g. one request- and one response-handler
-entry from the same file, share one pool since they point at the same `file_path`); every
-handler invocation produces exactly one `HandlerExecutionRecord`.
+**Relationships**: `GatewayConfig` 1—* `RouteConfig` (via `routes`); `RouteConfig` 1—*
+`HandlerRef` (via `handlers`); `HandlerRef` *—1 `HandlerWorkerPool` (keyed by
+`(route_name, file_path)` — two `HandlerRef`s on the *same* route pointing at the same file
+share a pool; the same file used by a *different* route does not); every handler invocation
+produces exactly one `HandlerExecutionRecord`.

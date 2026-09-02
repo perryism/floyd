@@ -12,6 +12,8 @@ import (
 	"api-gateway/tests/testutil"
 )
 
+const testRouteName = "test"
+
 func newEchoBackend(t *testing.T) *httptest.Server {
 	t.Helper()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -25,11 +27,15 @@ func newEchoBackend(t *testing.T) *httptest.Server {
 // US1 acceptance scenario 1: a request handler adds a header; the backend receives it.
 func TestRequestHandler_AddHeader(t *testing.T) {
 	backend := newEchoBackend(t)
-	gw := testutil.NewTestGateway(t, backend, []config.HandlerRef{
-		{Name: "add-header", FilePath: "../fixtures/add_header.py", TimeoutMS: 2000},
-	})
+	gw := testutil.NewTestGateway(t, []testutil.TestRoute{{
+		Name:    testRouteName,
+		Backend: backend,
+		Handlers: []config.HandlerRef{
+			{Name: "add-header", FilePath: "../fixtures/add_header.py", TimeoutMS: 2000},
+		},
+	}})
 
-	resp, err := http.Get(gw.URL + "/anything")
+	resp, err := http.Get(gw.URL + "/" + testRouteName + "/anything")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -53,11 +59,15 @@ func TestRequestHandler_RejectMissingField(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	gw := testutil.NewTestGateway(t, backend, []config.HandlerRef{
-		{Name: "reject-missing-field", FilePath: "../fixtures/reject_missing_field.py", TimeoutMS: 2000},
-	})
+	gw := testutil.NewTestGateway(t, []testutil.TestRoute{{
+		Name:    testRouteName,
+		Backend: backend,
+		Handlers: []config.HandlerRef{
+			{Name: "reject-missing-field", FilePath: "../fixtures/reject_missing_field.py", TimeoutMS: 2000},
+		},
+	}})
 
-	resp, err := http.Get(gw.URL + "/anything")
+	resp, err := http.Get(gw.URL + "/" + testRouteName + "/anything")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}

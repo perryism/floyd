@@ -22,9 +22,13 @@ func TestHandlerFailure_IsolatesAndKeepsServing(t *testing.T) {
 	}))
 	t.Cleanup(failingBackend.Close)
 
-	failingGW := testutil.NewTestGateway(t, failingBackend, []config.HandlerRef{
-		{Name: "always-fail", FilePath: "../fixtures/always_fail.py", TimeoutMS: 2000},
-	})
+	failingGW := testutil.NewTestGateway(t, []testutil.TestRoute{{
+		Name:    testRouteName,
+		Backend: failingBackend,
+		Handlers: []config.HandlerRef{
+			{Name: "always-fail", FilePath: "../fixtures/always_fail.py", TimeoutMS: 2000},
+		},
+	}})
 
 	// An unrelated, healthy gateway instance (a different destination in this
 	// architecture), running concurrently.
@@ -32,12 +36,16 @@ func TestHandlerFailure_IsolatesAndKeepsServing(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(healthyBackend.Close)
-	healthyGW := testutil.NewTestGateway(t, healthyBackend, []config.HandlerRef{
-		{Name: "add-header", FilePath: "../fixtures/add_header.py", TimeoutMS: 2000},
-	})
+	healthyGW := testutil.NewTestGateway(t, []testutil.TestRoute{{
+		Name:    testRouteName,
+		Backend: healthyBackend,
+		Handlers: []config.HandlerRef{
+			{Name: "add-header", FilePath: "../fixtures/add_header.py", TimeoutMS: 2000},
+		},
+	}})
 
 	for i := 0; i < 2; i++ {
-		resp, err := http.Get(failingGW.URL + "/anything")
+		resp, err := http.Get(failingGW.URL + "/" + testRouteName + "/anything")
 		if err != nil {
 			t.Fatalf("request %d to failing gateway errored at the transport level (process likely crashed): %v", i, err)
 		}
@@ -50,7 +58,7 @@ func TestHandlerFailure_IsolatesAndKeepsServing(t *testing.T) {
 		t.Fatal("backend must not be called when a request handler errors")
 	}
 
-	healthyResp, err := http.Get(healthyGW.URL + "/anything")
+	healthyResp, err := http.Get(healthyGW.URL + "/" + testRouteName + "/anything")
 	if err != nil {
 		t.Fatalf("unrelated healthy gateway failed: %v", err)
 	}
@@ -69,11 +77,15 @@ func TestHandlerFailure_Timeout(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	gw := testutil.NewTestGateway(t, backend, []config.HandlerRef{
-		{Name: "slow", FilePath: "../fixtures/slow.py", TimeoutMS: 100},
-	})
+	gw := testutil.NewTestGateway(t, []testutil.TestRoute{{
+		Name:    testRouteName,
+		Backend: backend,
+		Handlers: []config.HandlerRef{
+			{Name: "slow", FilePath: "../fixtures/slow.py", TimeoutMS: 100},
+		},
+	}})
 
-	resp, err := http.Get(gw.URL + "/anything")
+	resp, err := http.Get(gw.URL + "/" + testRouteName + "/anything")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}

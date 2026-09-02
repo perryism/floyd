@@ -26,20 +26,23 @@ type Handler struct {
 	Client workerpool.Client
 }
 
-// Runner is the gateway's top-level http.Handler: it runs the configured request-handler
-// chain (FR-001, FR-005), forwards to the backend (FR-009), then runs the configured
+// Runner is one route's http.Handler: it runs that route's configured request-handler chain
+// (FR-001, FR-005), forwards to that route's backend (FR-009), then runs the configured
 // response-handler chain (FR-002, FR-005) before writing the final response. A route with no
 // configured handlers behaves as plain pass-through proxying (FR-009).
 type Runner struct {
+	routeName string
 	forwarder *proxy.Forwarder
 	handlers  []Handler
 }
 
-// NewRunner builds a Runner. handlers runs in the given order for both the request phase and
-// the response phase (FR-005) — a handler file that only implements one direction relies on
-// the handlers-sdk's no-op default for the other.
-func NewRunner(forwarder *proxy.Forwarder, handlers []Handler) *Runner {
-	return &Runner{forwarder: forwarder, handlers: handlers}
+// NewRunner builds a Runner for one route. handlers runs in the given order for both the
+// request phase and the response phase (FR-005) — a handler file that only implements one
+// direction relies on the handlers-sdk's no-op default for the other. routeName is attached to
+// every log record and error response this Runner produces (data-model.md
+// HandlerExecutionRecord.route, contracts/error-format.md error.route).
+func NewRunner(routeName string, forwarder *proxy.Forwarder, handlers []Handler) *Runner {
+	return &Runner{routeName: routeName, forwarder: forwarder, handlers: handlers}
 }
 
 func (rn *Runner) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -63,13 +66,13 @@ func (rn *Runner) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			func(ctx context.Context) (*workerpool.Message, *workerpool.Rejection, error) {
 				return h.Client.ProcessRequest(ctx, requestID, msg)
 			})
-		logInvocation(requestID, h.Ref.Name, observability.DirectionRequest, outcome, err)
+		logInvocation(requestID, rn.routeName, h.Ref.Name, observability.DirectionRequest, outcome, err)
 		if err != nil {
-			writeFailClosed(w, err, h.Ref.Name)
+			writeFailClosed(w, err, rn.routeName, h.Ref.Name)
 			return
 		}
 		if rejection != nil {
-			observability.WriteError(w, observability.CodeHandlerRejectedRequest, rejection.Message, h.Ref.Name)
+			observability.WriteError(w, observability.CodeHandlerRejectedRequest, rejection.Message, rn.routeName, h.Ref.Name)
 			return
 		}
 		msg = *result
@@ -92,13 +95,13 @@ func (rn *Runner) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			func(ctx context.Context) (*workerpool.Message, *workerpool.Rejection, error) {
 				return h.Client.ProcessResponse(ctx, requestID, respMsg)
 			})
-		logInvocation(requestID, h.Ref.Name, observability.DirectionResponse, outcome, err)
+		logInvocation(requestID, rn.routeName, h.Ref.Name, observability.DirectionResponse, outcome, err)
 		if err != nil {
-			writeFailClosed(w, err, h.Ref.Name)
+			writeFailClosed(w, err, rn.routeName, h.Ref.Name)
 			return
 		}
 		if rejection != nil {
-			observability.WriteError(w, observability.CodeHandlerRejectedResponse, rejection.Message, h.Ref.Name)
+			observability.WriteError(w, observability.CodeHandlerRejectedResponse, rejection.Message, rn.routeName, h.Ref.Name)
 			return
 		}
 		respMsg = *result
@@ -159,12 +162,13 @@ func messagesEqual(a, b workerpool.Message) bool {
 	return true
 }
 
-func logInvocation(requestID, handlerName string, dir observability.Direction, outcome observability.Outcome, err error) {
+func logInvocation(requestID, routeName, handlerName string, dir observability.Direction, outcome observability.Outcome, err error) {
 	if err != nil {
 		outcome = observability.OutcomeErrored
 	}
 	observability.LogHandlerExecution(observability.HandlerExecutionRecord{
 		RequestID: requestID,
+		Route:     routeName,
 		Handler:   handlerName,
 		Direction: dir,
 		Outcome:   outcome,
@@ -174,7 +178,7 @@ func logInvocation(requestID, handlerName string, dir observability.Direction, o
 
 // writeFailClosed renders a handler error/timeout using the standard error envelope,
 // implementing FR-012's fail-closed requirement.
-func writeFailClosed(w http.ResponseWriter, err error, handlerName string) {
+func writeFailClosed(w http.ResponseWriter, err error, routeName, handlerName string) {
 	// A context deadline exceeded locally (before the call even reaches gRPC) satisfies
 	// errors.Is directly, but grpc-go wraps a deadline hit during the RPC itself into its
 	// own *status.Error with codes.DeadlineExceeded, which does not unwrap to
@@ -183,7 +187,7 @@ func writeFailClosed(w http.ResponseWriter, err error, handlerName string) {
 	if errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded {
 		code = observability.CodeHandlerTimeout
 	}
-	observability.WriteError(w, code, "the configured handler failed to process this request", handlerName)
+	observability.WriteError(w, code, "the configured handler failed to process this request", routeName, handlerName)
 }
 
 // flattenHeaders converts Go's canonicalized (Title-Case) http.Header into the lowercase

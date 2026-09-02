@@ -10,12 +10,20 @@
 
 Let API teams customize request and response handling — validate/transform inbound requests,
 transform/filter outbound responses — without touching their backend service. The gateway core
-is a Go proxy launched as a single-destination CLI process (`api-gateway --dest <backend>
---host <listen-host> --port <listen-port> --handlers <file.py>`); handlers are written in
-Python. The Go process supervises a bounded pool of long-lived Python worker processes per
-`--handlers` file (resolved from CLI flags at startup, not a runtime API) and calls them over a
-local gRPC channel with a per-call timeout, failing closed on any handler error or timeout so
-one broken handler can't take down this instance's traffic.
+is a Go proxy launched as `api-gateway --host <listen-host> --port <listen-port> --config
+<routes.yaml>`, where the YAML file lists one or more named routes (`name`, `description`,
+`dest`, optional `handlers`); handlers are written in Python. A request's first path segment
+(`/app1/...`) selects its route by name, with that segment stripped before forwarding. The Go
+process supervises a bounded pool of long-lived Python worker processes per `(route,
+handler-file)` pair (resolved from the config file at startup, not a runtime API) and calls
+them over a local gRPC channel with a per-call timeout, failing closed on any handler error or
+timeout so one broken handler can't take down its route — let alone any other route. A
+built-in `GET /_` endpoint lists every configured route's name and description, so a caller
+can discover what's available without reading `config.yaml` directly.
+
+**Revision note**: this supersedes the previous single-destination-per-process design (`--dest`
++ repeatable `--handlers`, no route table). See research.md §5r/§5s/§5t for what changed and
+why; §5/§6's original text is kept, struck through, rather than deleted.
 
 ## Technical Context
 
@@ -23,40 +31,44 @@ one broken handler can't take down this instance's traffic.
 
 **Primary Dependencies**: Go: standard `net/http`, standard `flag` (CLI parsing — the flag set
 is small enough that a third-party CLI framework would be unjustified complexity per the
-Code Quality principle), `google.golang.org/grpc`, `google.golang.org/protobuf`. Python:
-`grpcio` + generated stubs from the shared `.proto` contract, packaged behind a small
-`handlers-sdk` so handler authors implement two callbacks rather than hand-writing gRPC
-boilerplate.
+Code Quality principle), `gopkg.in/yaml.v3` (routes config), `google.golang.org/grpc`,
+`google.golang.org/protobuf`. Python: `grpcio` + generated stubs from the shared `.proto`
+contract, packaged behind a small `handlers-sdk` so handler authors implement two callbacks
+rather than hand-writing gRPC boilerplate.
 
-**Storage**: N/A — all configuration is CLI flags resolved once at process startup; no config
-file, no database.
+**Storage**: N/A for persistent storage — `--host`/`--port` are CLI flags, and the route table
+(names, destinations, handler chains) comes from the YAML file at `--config`, loaded once at
+startup; no database, no runtime config API.
 
 **Testing**: Go: `go test` for unit/integration/contract suites. Python: `pytest` for the
 handler SDK's own contract tests.
 
-**Target Platform**: Linux server, containerized deployment; one process per upstream
-destination (sidecar/per-service proxy pattern).
+**Target Platform**: Linux server, containerized deployment; one process now serves multiple
+named routes (previously: one process per upstream destination).
 
-**Project Type**: Single CLI-launched web-service (network proxy) plus a small Python SDK
-package consumed by handler authors.
+**Project Type**: Single CLI-launched web-service (network proxy, now with an in-process
+path-based router) plus a small Python SDK package consumed by handler authors.
 
-**Performance Goals**: Baseline proxy (zero `--handlers` configured) adds ≤5ms p95 over direct
-backend latency. Each configured handler adds ≤20ms p95 over the local gRPC hop (matches
-SC-004). Reference target throughput ≥5,000 req/s per gateway instance on 4 vCPU — a default
-pending real load-test data (see Complexity Tracking: none required, but flagged here for
-follow-up during implementation).
+**Performance Goals**: Baseline proxy (a route with no `handlers` configured) adds ≤5ms p95
+over direct backend latency. Each configured handler adds ≤20ms p95 over the local gRPC hop
+(matches SC-004). Route matching itself is an O(1) map lookup by first path segment, so it must
+add no measurable overhead as the route count grows. Reference target throughput ≥5,000 req/s
+per gateway instance on 4 vCPU — a default pending real load-test data (unchanged from before).
 
 **Constraints**: Every handler call MUST carry a bounded, configurable timeout (default 100ms)
 enforced via gRPC deadline; on timeout or error the gateway MUST fail closed (FR-012). The
-Python worker pool per `--handlers` file MUST be fixed-size and bounded (default = CPU core
-count) — no per-request process spawning, no unbounded pools. A worker crash or stuck call MUST
-NOT crash or block the Go process (FR-006).
+Python worker pool per `(route, handler-file)` pair MUST be fixed-size and bounded (default =
+CPU core count) — no per-request process spawning, no unbounded pools, and no pool shared
+across routes even if they reference the same handler file (research.md §5t). A worker crash
+or stuck call on one route MUST NOT crash or block the Go process, nor affect any other route
+(FR-006).
 
-**Scale/Scope**: A single gateway process proxies to exactly one destination (`--dest`); serving
-multiple destinations means running multiple gateway processes, each independently configured.
-Each process supports a small number (≤5, default assumption) of chained handlers per direction
-via repeated `--handlers` flags. Any runtime handler-management API is explicitly out of scope
-(FR-011: startup-flag-only).
+**Scale/Scope**: A single gateway process now serves multiple named routes (a low-to-moderate
+number, e.g. tens) defined in one `--config` YAML file; each route independently gets the same
+handler-chaining and isolation guarantees a whole process used to get. Running multiple
+gateway processes (e.g. for horizontal scaling, or separate listen ports) is still supported,
+but is no longer the only way to add a second destination. Any runtime route/handler-management
+API is explicitly out of scope (FR-011: startup-config-only).
 
 ## Constitution Check
 
@@ -64,10 +76,10 @@ via repeated `--handlers` flags. Any runtime handler-management API is explicitl
 
 | Principle | Check | Status |
 |---|---|---|
-| I. Code Quality | CLI-flag parsing, proxy, chain-execution, and worker-pool supervision are separate, single-responsibility Go packages (`internal/config`, `internal/proxy`, `internal/handler`); no speculative abstraction beyond what FR-001–FR-012 require — no route table, since a process serves exactly one destination. Linting (`golangci-lint` for Go, `ruff` for Python) gates CI; PR review required. | PASS |
-| II. Testing Standards (NON-NEGOTIABLE) | Three-layer test plan (contract / integration / unit) defined in research.md §6, mapped to specific FRs. CI runs the full suite; no merge on red build. | PASS |
-| III. User Experience Consistency | One standard error envelope (`contracts/error-format.md`) used for every handler rejection and failure (FR-007, FR-012), identical across every gateway process — no per-instance custom error shape. | PASS |
-| IV. Performance Requirements | Latency/throughput budget stated above before implementation. Worker pool is fixed-size and bounded; every handler call has an enforced timeout. No unbounded queues/caches/pools introduced. | PASS |
+| I. Code Quality | Config parsing, path-based routing, proxy, chain-execution, and worker-pool supervision are separate, single-responsibility Go packages (`internal/config`, `internal/router`, `internal/proxy`, `internal/handler`). `internal/router` is genuinely warranted now (not the speculative abstraction it would have been before this request) — it exists because the feature now requires matching a request to one of several named routes. Linting (`golangci-lint` for Go, `ruff` for Python) gates CI; PR review required. | PASS |
+| II. Testing Standards (NON-NEGOTIABLE) | Three-layer test plan (contract / integration / unit) defined in research.md §6, mapped to specific FRs, now including multi-route and route-not-found scenarios. CI runs the full suite; no merge on red build. | PASS |
+| III. User Experience Consistency | One standard error envelope (`contracts/error-format.md`, now including `ROUTE_NOT_FOUND`) used for every handler rejection, failure, and routing miss (FR-007, FR-012), identical across every route and every gateway process. | PASS |
+| IV. Performance Requirements | Latency/throughput budget stated above before implementation. Route lookup is O(1) regardless of route count. Worker pool is fixed-size and bounded per `(route, handler-file)` pair; every handler call has an enforced timeout. No unbounded queues/caches/pools introduced. | PASS |
 
 No violations — Complexity Tracking table below is empty by design.
 
@@ -90,20 +102,27 @@ specs/001-handler-injection/
 ```text
 cmd/
 └── gateway/
-    └── main.go              # Entrypoint: parses --dest/--host/--port/--handlers, starts proxy + pools
+    └── main.go              # Entrypoint: parses --host/--port/--config, starts proxy + per-route pools
 
 internal/
-├── config/                  # Parses and validates CLI flags into a GatewayConfig (FR-011)
-├── proxy/                   # Core reverse-proxy: forwards every request to --dest
+├── config/                  # Parses --host/--port and loads/validates the --config YAML into
+│                            # a GatewayConfig (list of RouteConfig) (FR-011)
+├── router/                  # Matches an inbound request's first path segment to a RouteConfig,
+│                            # strips it before forwarding, 404s (ROUTE_NOT_FOUND) on no match;
+│                            # also serves the built-in GET /_ discovery listing (research.md §5u)
+├── proxy/                   # Core reverse-proxy: forwards a request to a route's dest
 ├── handler/
-│   ├── chain.go             # Runs the configured request/response handler chain in flag order (FR-005)
-│   └── workerpool/          # Supervises the bounded Python worker pool per --handlers file; speaks
-│                            # the handler.proto contract; enforces timeout + fail-closed (FR-006, FR-012)
-└── observability/           # Structured logging of handler execution records (FR-008)
+│   ├── chain.go             # Runs one route's request/response handler chain in configured order (FR-005)
+│   └── workerpool/          # Supervises the bounded Python worker pool per (route, handler-file)
+│                            # pair; speaks the handler.proto contract; enforces timeout +
+│                            # fail-closed (FR-006, FR-012)
+└── observability/           # Structured logging of handler execution records, now including
+                             # which route each record belongs to (FR-008)
 
 api/
 └── handler/v1/
-    └── handler.proto        # gRPC contract shared by the Go supervisor and Python workers
+    └── handler.proto        # gRPC contract shared by the Go supervisor and Python workers —
+                             # unaffected by routing, which is a Go-side-only concern
 
 handlers-sdk/                # Python package handler authors implement against
 └── gateway_handler_sdk/
@@ -113,24 +132,28 @@ handlers-sdk/                # Python package handler authors implement against
 
 tests/
 ├── contract/                # Go<->Python handler contract tests (handler.proto conformance)
-├── integration/             # End-to-end: gateway binary + real Python handler + stub backend, per user story
-└── unit/                    # Go unit tests (config, proxy, chain, workerpool)
+├── integration/             # End-to-end: gateway binary + real Python handler + stub backend,
+│                            # per user story, now including multi-route, route-not-found, and
+│                            # discovery (GET /_) cases
+└── unit/                    # Go unit tests (config, router, proxy, chain, workerpool)
 
 python/
 └── tests/                   # pytest suite validating handlers-sdk against handler.proto
 ```
 
-**Structure Decision**: A single Go-owned deployable (`cmd/gateway`), launched as a plain CLI
-process with no route table — it parses `--dest`/`--host`/`--port`/`--handlers` and proxies
-every request it receives to that one destination, running the configured handler chain around
-it. An internal handler subsystem (`internal/handler`) supervises a bounded Python worker pool
-over a generated gRPC contract (`api/handler/v1/handler.proto`). A thin Python SDK
-(`handlers-sdk/`) gives handler authors two base classes to implement, hiding the gRPC
-boilerplate. Serving multiple destinations means running multiple instances of this same binary,
-each with its own flags — not adding a route table to one process. This single-project,
-two-language layout was chosen over splitting the Python handlers into an independently deployed
-service because FR-011 requires handler wiring to be resolved entirely from the gateway's own
-startup configuration — an independently deployed handler service would reintroduce the
+**Structure Decision**: A single Go-owned deployable (`cmd/gateway`) now owns a small route
+table: it parses `--host`/`--port`/`--config`, loads the YAML file into a list of
+`RouteConfig`s, and adds one new package, `internal/router`, to match each inbound request to
+its route by first path segment (O(1)) and strip that segment before proxying. Everything
+downstream of routing is unchanged in shape: `internal/handler` still supervises a bounded
+Python worker pool per handler file over the generated gRPC contract
+(`api/handler/v1/handler.proto`), just now keyed by `(route, handler-file)` instead of just
+`handler-file`, and the Python SDK (`handlers-sdk/`) is untouched. Serving multiple
+*processes* (for horizontal scaling or separate listen ports) is still fully supported — this
+change adds a route table *within* one process, it doesn't remove the ability to run more than
+one process. The two-language, single-project layout is unchanged from before, for the same
+reason: FR-011 requires handler wiring resolved entirely from the gateway's own startup
+configuration, and an independently deployed handler service would reintroduce the
 externally-called-service model the spec explicitly ruled out.
 
 ## Complexity Tracking

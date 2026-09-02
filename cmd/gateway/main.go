@@ -1,6 +1,6 @@
-// Command gateway is the api-gateway entrypoint: a single-destination reverse proxy that
-// runs a configurable chain of Python request/response handlers around every request. See
-// specs/001-handler-injection/quickstart.md for usage.
+// Command gateway is the api-gateway entrypoint: a reverse proxy serving one or more named
+// routes (each with its own destination and optional Python request/response handler chain),
+// loaded from a YAML file. See specs/001-handler-injection/quickstart.md for usage.
 package main
 
 import (
@@ -17,6 +17,7 @@ import (
 	"api-gateway/internal/handler"
 	"api-gateway/internal/handler/workerpool"
 	"api-gateway/internal/proxy"
+	"api-gateway/internal/router"
 )
 
 func main() {
@@ -35,30 +36,40 @@ func run(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pools := make([]*workerpool.Pool, 0, len(cfg.Handlers))
-	handlers := make([]handler.Handler, 0, len(cfg.Handlers))
-	for _, ref := range cfg.Handlers {
-		pool, err := workerpool.New(ref.Name, ref.FilePath, pythonPathOption()...)
-		if err != nil {
-			return fmt.Errorf("configuring handler %q: %w", ref.Name, err)
+	pools := make([]*workerpool.Pool, 0)
+	routes := make([]router.Route, 0, len(cfg.Routes))
+	for _, rc := range cfg.Routes {
+		handlers := make([]handler.Handler, 0, len(rc.Handlers))
+		for _, ref := range rc.Handlers {
+			// Pools are scoped per (route, handler-file): looping per RouteConfig gives
+			// each route its own *workerpool.Pool even if two routes reference the same
+			// handler file, so a crash-prone handler on one route can't degrade another
+			// route's supply of workers (research.md §5t, FR-006).
+			pool, err := workerpool.New(rc.Name+"/"+ref.Name, ref.FilePath, pythonPathOption()...)
+			if err != nil {
+				return fmt.Errorf("route %q: configuring handler %q: %w", rc.Name, ref.Name, err)
+			}
+			if err := pool.Start(ctx); err != nil {
+				stopAll(pools)
+				return fmt.Errorf("route %q: starting handler %q: %w", rc.Name, ref.Name, err)
+			}
+			pools = append(pools, pool)
+			handlers = append(handlers, handler.Handler{Ref: ref, Client: pool})
 		}
-		if err := pool.Start(ctx); err != nil {
-			stopAll(pools)
-			return fmt.Errorf("starting handler %q: %w", ref.Name, err)
-		}
-		pools = append(pools, pool)
-		handlers = append(handlers, handler.Handler{Ref: ref, Client: pool})
+
+		runner := handler.NewRunner(rc.Name, proxy.New(rc.Dest), handlers)
+		routes = append(routes, router.Route{Config: rc, Handler: runner})
 	}
 	defer stopAll(pools)
 
-	runner := handler.NewRunner(proxy.New(cfg.Dest), handlers)
+	topRouter := router.New(routes)
 
 	addr := net.JoinHostPort(cfg.ListenHost, fmt.Sprintf("%d", cfg.ListenPort))
-	server := &http.Server{Addr: addr, Handler: runner}
+	server := &http.Server{Addr: addr, Handler: topRouter}
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("api-gateway: listening on %s, proxying to %s (%d handler(s))", addr, cfg.Dest, len(handlers))
+		log.Printf("api-gateway: listening on %s (%d route(s))", addr, len(cfg.Routes))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
