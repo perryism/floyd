@@ -6,7 +6,7 @@ syntax = "proto3";
 
 package handler.v1;
 
-option go_package = "example.com/api-gateway/api/handler/v1;handlerv1";
+option go_package = "api-gateway/api/handler/v1;handlerv1";
 
 // A language-agnostic representation of an HTTP message, used for both requests and
 // responses so the same shape flows through ProcessRequest and ProcessResponse.

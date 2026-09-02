@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gateway-handler-sdk"
+version = "0.1.0"
+description = "SDK for writing request/response handlers for the api-gateway"
+requires-python = ">=3.11"
+dependencies = [
+    "grpcio>=1.65,<2",
+    # Must stay >=7.35 to match the gencode version baked in by the grpcio-tools version
+    # pinned below, used to regenerate v1/handler_pb2*.py from api/handler/v1/handler.proto.
+    "protobuf>=7.35,<8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5", "grpcio-tools==1.83.1"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gateway_handler_sdk*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

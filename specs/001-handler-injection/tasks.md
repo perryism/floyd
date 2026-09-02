@@ -27,14 +27,14 @@ implementation and testing of each story.
 
 **Purpose**: Repository scaffolding for the two-language (Go + Python) project
 
-- [ ] T001 Initialize the Go module and create the package skeleton per plan.md's Project
+- [X] T001 Initialize the Go module and create the package skeleton per plan.md's Project
   Structure: `cmd/gateway/`, `internal/config/`, `internal/proxy/`, `internal/handler/`,
   `internal/handler/workerpool/`, `internal/observability/`, `api/handler/v1/`
-- [ ] T002 [P] Initialize the Python `handlers-sdk` package skeleton in
+- [X] T002 [P] Initialize the Python `handlers-sdk` package skeleton in
   `handlers-sdk/gateway_handler_sdk/` with `pyproject.toml`, `__init__.py`
-- [ ] T003 [P] Configure Go linting (`golangci-lint`) and Python linting (`ruff`) with CI gating
+- [X] T003 [P] Configure Go linting (`golangci-lint`) and Python linting (`ruff`) with CI gating
   and no disabled checks, per Constitution Principle I (Code Quality)
-- [ ] T004 [P] Set up CI to run `go test ./...` and `pytest` on every pull request with a
+- [X] T004 [P] Set up CI to run `go test ./...` and `pytest` on every pull request with a
   failing suite blocking merge, per Constitution Principle II (Testing Standards, NON-NEGOTIABLE)
 
 **Checkpoint**: Repository structure exists; CI enforces lint + tests on every PR
@@ -47,30 +47,30 @@ implementation and testing of each story.
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T005 Finalize `contracts/handler.proto` into `api/handler/v1/handler.proto` and generate
+- [X] T005 Finalize `contracts/handler.proto` into `api/handler/v1/handler.proto` and generate
   Go and Python stubs (`protoc`/`buf`) for the `Handler` service (`ProcessRequest`,
   `ProcessResponse`)
-- [ ] T006 [P] Implement CLI flag parsing into a `GatewayConfig` in `internal/config/config.go`:
+- [X] T006 [P] Implement CLI flag parsing into a `GatewayConfig` in `internal/config/config.go`:
   `--dest`, `--host`, `--port`, repeatable `--handlers`; fail to start on a malformed `--dest`
   or an unloadable `--handlers` file (FR-011, data-model.md `GatewayConfig` validation rules)
-- [ ] T007 [P] Implement the core reverse-proxy in `internal/proxy/proxy.go` that forwards every
+- [X] T007 [P] Implement the core reverse-proxy in `internal/proxy/proxy.go` that forwards every
   request to `GatewayConfig.dest` (FR-009 baseline pass-through when no handlers configured)
-- [ ] T008 Implement the standard error envelope in `internal/observability/errors.go` per
+- [X] T008 Implement the standard error envelope in `internal/observability/errors.go` per
   `contracts/error-format.md`, including the `error.code` → HTTP status mapping table
-- [ ] T009 [P] Implement `HandlerExecutionRecord` structured logging in
+- [X] T009 [P] Implement `HandlerExecutionRecord` structured logging in
   `internal/observability/log.go` (FR-008, data-model.md)
-- [ ] T010 Implement the worker-pool supervisor in `internal/handler/workerpool/pool.go`: fixed
+- [X] T010 Implement the worker-pool supervisor in `internal/handler/workerpool/pool.go`: fixed
   size per handler file (default = CPU core count), spawn-once-reuse-always, crash detection with
   backoff restart, and "5 consecutive crashes → Degraded" (research.md §2, FR-006)
-- [ ] T011 Implement the handler chain runner in `internal/handler/chain.go` that calls
+- [X] T011 Implement the handler chain runner in `internal/handler/chain.go` that calls
   `workerpool` in configured order, enforces a per-call gRPC deadline from each handler's
   `timeout_ms`, and fails closed on any error/timeout into the standard error envelope
   (FR-005, FR-012, depends on T008, T010)
-- [ ] T012 [P] Implement the Python SDK server boilerplate in
+- [X] T012 [P] Implement the Python SDK server boilerplate in
   `handlers-sdk/gateway_handler_sdk/server.py`: starts a gRPC server on a Unix domain socket and
   dispatches to whichever of `RequestHandler`/`ResponseHandler` the loaded module defines
   (depends on T005)
-- [ ] T013 Wire `cmd/gateway/main.go`: parse flags into `GatewayConfig` (T006), start one worker
+- [X] T013 Wire `cmd/gateway/main.go`: parse flags into `GatewayConfig` (T006), start one worker
   pool per distinct `--handlers` file (T010), start the proxy+chain (T007, T011), and listen on
   `--host`:`--port` (depends on T006, T007, T010, T011)
 

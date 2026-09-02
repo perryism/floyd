@@ -1,0 +1,21 @@
+# Go
+*.exe
+*.test
+*.out
+/bin/
+/gateway
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+*.egg-info/
+
+# Universal
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.idea/
