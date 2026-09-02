@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,6 +67,7 @@ type worker struct {
 	mu         sync.Mutex
 	state      state
 	sockPath   string
+	workerDir  string
 	cmd        *exec.Cmd
 	conn       *grpc.ClientConn
 	client     handlerv1.HandlerClient
@@ -109,6 +109,25 @@ func New(name, handlerFilePath string, opts ...Option) (*Pool, error) {
 
 // Name returns this pool's handler name, for logging and error messages.
 func (p *Pool) Name() string { return p.name }
+
+// DebugSocketPath returns the first worker's current Unix domain socket path, or "" if none
+// is ready. It exists only so tests can verify socket/directory permissions (T037) — never
+// call this to actually reach the socket; use ProcessRequest/ProcessResponse instead.
+func (p *Pool) DebugSocketPath() string {
+	p.mu.Lock()
+	workers := p.workers
+	p.mu.Unlock()
+
+	for _, w := range workers {
+		w.mu.Lock()
+		path := w.sockPath
+		w.mu.Unlock()
+		if path != "" {
+			return path
+		}
+	}
+	return ""
+}
 
 // Start spawns the pool's workers and waits for each to become ready. It returns an error
 // (rather than starting with fewer workers) if any worker's handler file fails to load —
@@ -177,18 +196,26 @@ func (p *Pool) Stop() {
 		if w.cmd != nil && w.cmd.Process != nil {
 			_ = w.cmd.Process.Kill()
 		}
-		_ = os.Remove(w.sockPath)
+		_ = os.RemoveAll(w.workerDir)
 		w.mu.Unlock()
 	}
 }
 
 func (p *Pool) startWorker(ctx context.Context) (*worker, error) {
-	// Unix domain socket paths are capped at ~103-108 bytes (sockaddr_un.sun_path); a name
-	// that embeds the (arbitrary-length) handler name, PID, and a large random int can
-	// exceed that once combined with a long os.TempDir() prefix (common on macOS). Keep the
-	// filename itself short and fixed-length regardless of handler name length.
-	sockPath := filepath.Join(os.TempDir(), fmt.Sprintf("gw-%08x.sock", rand.Uint32()))
-	_ = os.Remove(sockPath)
+	// Put the socket in a fresh, private (0700) directory rather than directly in the
+	// shared temp dir: on a multi-user host with a world-writable temp dir (e.g. Linux's
+	// sticky-bit /tmp), a socket file's own permissions are derived from the worker
+	// process's umask (commonly 0755) and not something this code controls — but another
+	// local user can't even traverse into a 0700 directory they don't own to reach the
+	// socket at all, regardless of the file's own bits.
+	//
+	// Unix domain socket paths are capped at ~103-108 bytes (sockaddr_un.sun_path), so both
+	// the directory name and the socket filename inside it are kept short and fixed-length.
+	workerDir, err := os.MkdirTemp(os.TempDir(), "gw-")
+	if err != nil {
+		return nil, fmt.Errorf("creating private worker socket directory: %w", err)
+	}
+	sockPath := filepath.Join(workerDir, "s.sock")
 
 	cmd := exec.CommandContext(context.Background(), p.pythonPath, "-m", "gateway_handler_sdk.server",
 		"--handler-file", p.handlerAbs, "--socket", sockPath)
@@ -196,21 +223,24 @@ func (p *Pool) startWorker(ctx context.Context) (*worker, error) {
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
+		_ = os.RemoveAll(workerDir)
 		return nil, fmt.Errorf("launching worker process: %w", err)
 	}
 
 	conn, client, err := dialWithRetry(ctx, sockPath, startupTimeout)
 	if err != nil {
 		_ = cmd.Process.Kill()
+		_ = os.RemoveAll(workerDir)
 		return nil, err
 	}
 
 	return &worker{
-		state:    stateReady,
-		sockPath: sockPath,
-		cmd:      cmd,
-		conn:     conn,
-		client:   client,
+		state:     stateReady,
+		sockPath:  sockPath,
+		workerDir: workerDir,
+		cmd:       cmd,
+		conn:      conn,
+		client:    client,
 	}, nil
 }
 
@@ -261,7 +291,7 @@ func (p *Pool) watch(w *worker) {
 			_ = w.conn.Close()
 			w.conn = nil
 		}
-		_ = os.Remove(w.sockPath)
+		_ = os.RemoveAll(w.workerDir)
 		w.mu.Unlock()
 
 		if crashCount > maxConsecutiveCrashes {
@@ -306,6 +336,7 @@ func (p *Pool) watch(w *worker) {
 		w.mu.Lock()
 		w.state = nw.state
 		w.sockPath = nw.sockPath
+		w.workerDir = nw.workerDir
 		w.cmd = nw.cmd
 		w.conn = nw.conn
 		w.client = nw.client

@@ -68,7 +68,9 @@ def _from_result(result) -> handler_pb2.ProcessRequestResp | None:
 
 
 class HandlerServicer(handler_pb2_grpc.HandlerServicer):
-    def __init__(self, request_handler: RequestHandler | None, response_handler: ResponseHandler | None):
+    def __init__(
+        self, request_handler: RequestHandler | None, response_handler: ResponseHandler | None
+    ):
         self._request_handler = request_handler or RequestHandler()
         self._response_handler = response_handler or ResponseHandler()
 

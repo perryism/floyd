@@ -198,14 +198,20 @@ gateway fails closed with a clear error and keeps serving other requests
 
 **Purpose**: Improvements that span all user stories
 
-- [ ] T033 [P] Write handler-authoring docs in `README.md`, adapted from quickstart.md
-- [ ] T034 Run quickstart.md's manual verification end-to-end against a real backend
-- [ ] T035 [P] Unit tests for `internal/config` validation edge cases (malformed `--dest`,
+- [X] T033 [P] Write handler-authoring docs in `README.md`, adapted from quickstart.md
+- [X] T034 Run quickstart.md's manual verification end-to-end against a real backend (done
+  manually during Foundational implementation, and now covered continuously by
+  `tests/integration`)
+- [X] T035 [P] Unit tests for `internal/config` validation edge cases (malformed `--dest`,
   missing `--handlers` file) in `tests/unit/config_test.go`
-- [ ] T036 Load/benchmark test validating the Performance Requirements budget: baseline proxy
+- [X] T036 Load/benchmark test validating the Performance Requirements budget: baseline proxy
   ≤5ms p95 overhead, ≤20ms p95 per configured handler (SC-004), per Constitution Principle IV
-- [ ] T037 [P] Verify the worker-pool Unix domain socket is not network-exposed and has
-  restrictive file permissions
+  in `tests/integration/performance_test.go` — measured ~44µs baseline overhead and ~839µs
+  per-handler overhead locally, well within budget (a sanity check, not a load test)
+- [X] T037 [P] Verify the worker-pool Unix domain socket is not network-exposed and has
+  restrictive file permissions in `tests/unit/workerpool_security_test.go` — found and fixed a
+  real gap: the socket file's own permissions depend on the worker process's umask, so it now
+  lives in a fresh private (0700) directory instead of directly in the shared temp dir
 
 ---
 
