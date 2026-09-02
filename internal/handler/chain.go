@@ -1,13 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
-	"reflect"
 	"strings"
 	"time"
 
@@ -127,10 +127,33 @@ func invoke(
 	if rejection != nil {
 		return nil, rejection, observability.OutcomeRejected, nil
 	}
-	if reflect.DeepEqual(before, *result) {
+	if messagesEqual(before, *result) {
 		return result, nil, observability.OutcomePassed, nil
 	}
 	return result, nil, observability.OutcomeModified, nil
+}
+
+// messagesEqual reports whether two messages are the same for outcome-classification
+// purposes (FR-008's "passed" vs "modified"). It treats a nil and an empty (non-nil) Body or
+// Headers as equal: an empty gRPC bytes/map field deserializes as nil on one side of the wire
+// and as a zero-length value on the other, which reflect.DeepEqual would otherwise report as
+// "modified" even when a handler passed the message through untouched.
+func messagesEqual(a, b workerpool.Message) bool {
+	if a.Method != b.Method || a.Path != b.Path || a.StatusCode != b.StatusCode {
+		return false
+	}
+	if !bytes.Equal(a.Body, b.Body) {
+		return false
+	}
+	if len(a.Headers) != len(b.Headers) {
+		return false
+	}
+	for k, v := range a.Headers {
+		if bv, ok := b.Headers[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
 }
 
 func logInvocation(requestID, handlerName string, dir observability.Direction, outcome observability.Outcome, err error) {
@@ -174,9 +197,17 @@ func flattenHeaders(h http.Header) map[string]string {
 	return out
 }
 
+// headersFromMap converts a handler-facing header map back into http.Header for an outgoing
+// request/response. It drops content-length and transfer-encoding: both describe how the
+// original body was framed on the wire, and every message here has already been fully
+// buffered into a concrete []byte that may have a different length after a handler modified
+// it — Go's net/http sets the correct Content-Length itself from the actual bytes written.
 func headersFromMap(m map[string]string) http.Header {
 	h := make(http.Header, len(m))
 	for k, v := range m {
+		if k == "content-length" || k == "transfer-encoding" {
+			continue
+		}
 		h.Set(k, v)
 	}
 	return h

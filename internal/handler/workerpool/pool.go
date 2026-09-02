@@ -61,6 +61,7 @@ type Pool struct {
 	mu      sync.Mutex
 	workers []*worker
 	next    atomic.Uint64
+	stopped atomic.Bool
 }
 
 type worker struct {
@@ -160,8 +161,12 @@ func (p *Pool) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop terminates every worker process in the pool.
+// Stop terminates every worker process in the pool and tells their watch goroutines not to
+// restart them — otherwise each intentionally-killed process would look like a crash to
+// watch() and get replaced by a worker nothing will ever stop.
 func (p *Pool) Stop() {
+	p.stopped.Store(true)
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, w := range p.workers {
@@ -178,7 +183,11 @@ func (p *Pool) Stop() {
 }
 
 func (p *Pool) startWorker(ctx context.Context) (*worker, error) {
-	sockPath := filepath.Join(os.TempDir(), fmt.Sprintf("gateway-%s-%d-%d.sock", p.name, os.Getpid(), rand.Int63()))
+	// Unix domain socket paths are capped at ~103-108 bytes (sockaddr_un.sun_path); a name
+	// that embeds the (arbitrary-length) handler name, PID, and a large random int can
+	// exceed that once combined with a long os.TempDir() prefix (common on macOS). Keep the
+	// filename itself short and fixed-length regardless of handler name length.
+	sockPath := filepath.Join(os.TempDir(), fmt.Sprintf("gw-%08x.sock", rand.Uint32()))
 	_ = os.Remove(sockPath)
 
 	cmd := exec.CommandContext(context.Background(), p.pythonPath, "-m", "gateway_handler_sdk.server",
@@ -239,6 +248,10 @@ func dialWithRetry(ctx context.Context, sockPath string, timeout time.Duration) 
 func (p *Pool) watch(w *worker) {
 	for {
 		_ = w.cmd.Wait()
+
+		if p.stopped.Load() {
+			return
+		}
 
 		w.mu.Lock()
 		w.crashCount++

@@ -91,24 +91,26 @@ header; send a request and confirm the backend receives it with the header added
 
 > Write these tests FIRST; confirm they FAIL before implementing this phase
 
-- [ ] T014 [P] [US1] Contract test for `ProcessRequest` (modify + reject shapes) against
-  `handler.proto` in `tests/contract/test_process_request.go`
-- [ ] T015 [P] [US1] Integration test: request handler adds a header, backend receives it
-  (spec.md US1 Acceptance Scenario 1) in `tests/integration/test_request_handler_add_header.go`
-- [ ] T016 [P] [US1] Integration test: request handler rejects a request missing a required
+- [X] T014 [P] [US1] Contract test for `ProcessRequest` (modify + reject shapes) against
+  `handler.proto` in `tests/contract/process_request_test.go`
+- [X] T015 [P] [US1] Integration test: request handler adds a header, backend receives it
+  (spec.md US1 Acceptance Scenario 1) in `tests/integration/request_handler_test.go`
+  (`TestRequestHandler_AddHeader`)
+- [X] T016 [P] [US1] Integration test: request handler rejects a request missing a required
   field; backend is never called and caller gets `HANDLER_REJECTED_REQUEST` (spec.md US1
-  Acceptance Scenario 2) in `tests/integration/test_request_handler_reject.go`
+  Acceptance Scenario 2) in `tests/integration/request_handler_test.go`
+  (`TestRequestHandler_RejectMissingField`)
 
 ### Implementation for User Story 1
 
-- [ ] T017 [P] [US1] Implement the `RequestHandler` base class and dispatch in
+- [X] T017 [P] [US1] Implement the `RequestHandler` base class and dispatch in
   `handlers-sdk/gateway_handler_sdk/contracts.py` (FR-001, FR-010)
-- [ ] T018 [US1] Wire `internal/handler/chain.go`'s request path: call each configured request
+- [X] T018 [US1] Wire `internal/handler/chain.go`'s request path: call each configured request
   handler in order via `workerpool.ProcessRequest`, forward to the backend only if none reject
   (FR-001, FR-003, depends on T011, T017)
-- [ ] T019 [US1] Map a `Rejection` from `ProcessRequest` into the standard error envelope
+- [X] T019 [US1] Map a `Rejection` from `ProcessRequest` into the standard error envelope
   (`HANDLER_REJECTED_REQUEST`, 400) in `internal/observability/errors.go` (FR-007, depends on T008)
-- [ ] T020 [P] [US1] Add a reference handler at `examples/handlers/add_request_id.py` matching
+- [X] T020 [P] [US1] Add a reference handler at `examples/handlers/add_request_id.py` matching
   quickstart.md, for manual verification
 
 **Checkpoint**: User Story 1 is fully functional and independently testable — this is the MVP
@@ -125,21 +127,23 @@ field from the backend's JSON response; confirm the caller doesn't see that fiel
 
 ### Tests for User Story 2 (REQUIRED per Testing Standards) ⚠️
 
-- [ ] T021 [P] [US2] Contract test for `ProcessResponse` (modify + reject shapes) against
-  `handler.proto` in `tests/contract/test_process_response.go`
-- [ ] T022 [P] [US2] Integration test: response handler removes a field, caller doesn't see it
-  (spec.md US2 Acceptance Scenario 1) in `tests/integration/test_response_handler_remove_field.go`
-- [ ] T023 [P] [US2] Integration test: response handler adds a header, caller receives it
-  (spec.md US2 Acceptance Scenario 2) in `tests/integration/test_response_handler_add_header.go`
+- [X] T021 [P] [US2] Contract test for `ProcessResponse` (modify + reject shapes) against
+  `handler.proto` in `tests/contract/process_response_test.go`
+- [X] T022 [P] [US2] Integration test: response handler removes a field, caller doesn't see it
+  (spec.md US2 Acceptance Scenario 1) in `tests/integration/response_handler_test.go`
+  (`TestResponseHandler_RemoveField`)
+- [X] T023 [P] [US2] Integration test: response handler adds a header, caller receives it
+  (spec.md US2 Acceptance Scenario 2) in `tests/integration/response_handler_test.go`
+  (`TestResponseHandler_AddHeader`)
 
 ### Implementation for User Story 2
 
-- [ ] T024 [P] [US2] Implement the `ResponseHandler` base class and dispatch in
+- [X] T024 [P] [US2] Implement the `ResponseHandler` base class and dispatch in
   `handlers-sdk/gateway_handler_sdk/contracts.py` (FR-002, FR-010)
-- [ ] T025 [US2] Wire `internal/handler/chain.go`'s response path: call each configured response
+- [X] T025 [US2] Wire `internal/handler/chain.go`'s response path: call each configured response
   handler in order via `workerpool.ProcessResponse` before returning to the caller
   (FR-002, FR-004, depends on T011, T024)
-- [ ] T026 [US2] Map a `Rejection` from `ProcessResponse` into the standard error envelope
+- [X] T026 [US2] Map a `Rejection` from `ProcessResponse` into the standard error envelope
   (`HANDLER_REJECTED_RESPONSE`, 502) in `internal/observability/errors.go` (FR-007, depends on T008)
 
 **Checkpoint**: User Stories 1 AND 2 both work independently

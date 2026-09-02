@@ -13,6 +13,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install handlers-sdk
+        # Contract/integration tests spawn real Python workers (internal/handler/workerpool),
+        # so the Go test job needs the SDK installed too, not just the Python job below.
+        run: pip install -e ./handlers-sdk
       - name: Lint
         uses: golangci/golangci-lint-action@v6
         with:
