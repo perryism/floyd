@@ -42,3 +42,21 @@ jobs:
         run: ruff check handlers-sdk python
       - name: Test
         run: pytest python/tests
+
+  build:
+    needs: [go, python]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: go build -o gateway ./cmd/gateway
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gateway-linux-amd64
+          path: gateway
+          if-no-files-found: error
