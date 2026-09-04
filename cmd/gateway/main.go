@@ -16,6 +16,7 @@ import (
 	"api-gateway/internal/config"
 	"api-gateway/internal/handler"
 	"api-gateway/internal/handler/workerpool"
+	"api-gateway/internal/observability"
 	"api-gateway/internal/proxy"
 	"api-gateway/internal/router"
 )
@@ -62,10 +63,19 @@ func run(args []string) error {
 	}
 	defer stopAll(pools)
 
-	topRouter := router.New(routes)
+	var routerOpts []router.Option
+	if cfg.SingleEndpoint != "" {
+		routerOpts = append(routerOpts, router.WithRootRoute(cfg.SingleEndpoint))
+	}
+	topRouter := router.New(routes, routerOpts...)
+
+	var topHandler http.Handler = topRouter
+	if cfg.Verbose {
+		topHandler = observability.VerboseRequestLogger(topRouter)
+	}
 
 	addr := net.JoinHostPort(cfg.ListenHost, fmt.Sprintf("%d", cfg.ListenPort))
-	server := &http.Server{Addr: addr, Handler: topRouter}
+	server := &http.Server{Addr: addr, Handler: topHandler}
 
 	errCh := make(chan error, 1)
 	go func() {

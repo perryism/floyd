@@ -20,13 +20,14 @@ func writeConfigFile(t *testing.T, yamlContent string) string {
 func TestConfig_Parse_ValidMultiRoute(t *testing.T) {
 	handlerA := writeTempFile(t, "print('a')")
 	cfgPath := writeConfigFile(t, `
-- name: app1
-  description: The first app.
-  dest: http://localhost:3000
-- name: app2
-  description: The second app.
-  dest: http://localhost:3001
-  handlers: `+handlerA+`
+endpoints:
+  - name: app1
+    description: The first app.
+    dest: http://localhost:3000
+  - name: app2
+    description: The second app.
+    dest: http://localhost:3001
+    handlers: `+handlerA+`
 `)
 
 	cfg, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath})
@@ -57,11 +58,12 @@ func TestConfig_Parse_HandlersAsListPreservesOrder(t *testing.T) {
 	a := writeTempFile(t, "print('a')")
 	b := writeTempFile(t, "print('b')")
 	cfgPath := writeConfigFile(t, `
-- name: app1
-  dest: http://localhost:3000
-  handlers:
-    - `+a+`
-    - `+b+`
+endpoints:
+  - name: app1
+    dest: http://localhost:3000
+    handlers:
+      - `+a+`
+      - `+b+`
 `)
 
 	cfg, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath})
@@ -97,18 +99,19 @@ func TestConfig_Parse_NonexistentConfigFile(t *testing.T) {
 }
 
 func TestConfig_Parse_EmptyRoutesList(t *testing.T) {
-	cfgPath := writeConfigFile(t, "[]")
+	cfgPath := writeConfigFile(t, "endpoints: []")
 	if _, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath}); err == nil {
-		t.Fatal("expected an error for an empty routes list")
+		t.Fatal("expected an error for an empty endpoints list")
 	}
 }
 
 func TestConfig_Parse_DuplicateRouteName(t *testing.T) {
 	cfgPath := writeConfigFile(t, `
-- name: app1
-  dest: http://localhost:3000
-- name: app1
-  dest: http://localhost:3001
+endpoints:
+  - name: app1
+    dest: http://localhost:3000
+  - name: app1
+    dest: http://localhost:3001
 `)
 	if _, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath}); err == nil {
 		t.Fatal("expected an error for a duplicate route name")
@@ -117,8 +120,9 @@ func TestConfig_Parse_DuplicateRouteName(t *testing.T) {
 
 func TestConfig_Parse_RouteNameContainsSlash(t *testing.T) {
 	cfgPath := writeConfigFile(t, `
-- name: app1/sub
-  dest: http://localhost:3000
+endpoints:
+  - name: app1/sub
+    dest: http://localhost:3000
 `)
 	if _, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath}); err == nil {
 		t.Fatal("expected an error for a route name containing '/'")
@@ -127,8 +131,9 @@ func TestConfig_Parse_RouteNameContainsSlash(t *testing.T) {
 
 func TestConfig_Parse_ReservedRouteName(t *testing.T) {
 	cfgPath := writeConfigFile(t, `
-- name: "_"
-  dest: http://localhost:3000
+endpoints:
+  - name: "_"
+    dest: http://localhost:3000
 `)
 	if _, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath}); err == nil {
 		t.Fatal("expected an error for the reserved route name '_'")
@@ -138,7 +143,7 @@ func TestConfig_Parse_ReservedRouteName(t *testing.T) {
 func TestConfig_Parse_MalformedDest(t *testing.T) {
 	cases := []string{"", "not-a-url", "/just/a/path"}
 	for _, dest := range cases {
-		cfgPath := writeConfigFile(t, "- name: app1\n  dest: "+dest+"\n")
+		cfgPath := writeConfigFile(t, "endpoints:\n  - name: app1\n    dest: "+dest+"\n")
 		if _, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath}); err == nil {
 			t.Errorf("expected an error for dest %q, got none", dest)
 		}
@@ -147,17 +152,70 @@ func TestConfig_Parse_MalformedDest(t *testing.T) {
 
 func TestConfig_Parse_UnloadableHandlerFile(t *testing.T) {
 	cfgPath := writeConfigFile(t, `
-- name: app1
-  dest: http://localhost:3000
-  handlers: /does/not/exist.py
+endpoints:
+  - name: app1
+    dest: http://localhost:3000
+    handlers: /does/not/exist.py
 `)
 	if _, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath}); err == nil {
 		t.Fatal("expected an error for a nonexistent handlers file")
 	}
 }
 
+func TestConfig_Parse_VerboseFlag(t *testing.T) {
+	verboseTrue := writeConfigFile(t, "verbose: true\nendpoints:\n  - name: app1\n    dest: http://localhost:3000\n")
+	cfg, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", verboseTrue})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Verbose {
+		t.Fatal("expected Verbose to be true when verbose: true is set")
+	}
+
+	verboseOmitted := writeConfigFile(t, "endpoints:\n  - name: app1\n    dest: http://localhost:3000\n")
+	cfg, err = config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", verboseOmitted})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Verbose {
+		t.Fatal("expected Verbose to default to false when omitted")
+	}
+}
+
+func TestConfig_Parse_SingleEndpoint(t *testing.T) {
+	cfgPath := writeConfigFile(t, "single_endpoint: app1\nendpoints:\n  - name: app1\n    dest: http://localhost:3000\n")
+	cfg, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.SingleEndpoint != "app1" {
+		t.Fatalf("expected SingleEndpoint %q, got %q", "app1", cfg.SingleEndpoint)
+	}
+}
+
+func TestConfig_Parse_SingleEndpointMismatch(t *testing.T) {
+	cfgPath := writeConfigFile(t, "single_endpoint: app2\nendpoints:\n  - name: app1\n    dest: http://localhost:3000\n")
+	if _, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath}); err == nil {
+		t.Fatal("expected an error when single_endpoint doesn't match the sole endpoint's name")
+	}
+}
+
+func TestConfig_Parse_SingleEndpointWithMultipleEndpoints(t *testing.T) {
+	cfgPath := writeConfigFile(t, `
+single_endpoint: app1
+endpoints:
+  - name: app1
+    dest: http://localhost:3000
+  - name: app2
+    dest: http://localhost:3001
+`)
+	if _, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath}); err == nil {
+		t.Fatal("expected an error when single_endpoint is set alongside more than one endpoint")
+	}
+}
+
 func TestConfig_Parse_MissingHostOrPort(t *testing.T) {
-	cfgPath := writeConfigFile(t, "- name: app1\n  dest: http://localhost:3000\n")
+	cfgPath := writeConfigFile(t, "endpoints:\n  - name: app1\n    dest: http://localhost:3000\n")
 	cases := [][]string{
 		{"--port", "1235", "--config", cfgPath},                   // missing --host
 		{"--host", "0.0.0.0", "--config", cfgPath},                // missing --port

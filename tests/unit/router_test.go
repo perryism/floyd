@@ -91,6 +91,53 @@ func TestRouter_NoMatchReturnsRouteNotFound(t *testing.T) {
 	}
 }
 
+func TestRouter_WithRootRoute_ServesAnyPathUnprefixed(t *testing.T) {
+	var gotPath string
+	stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	})
+
+	rt := router.New(
+		[]router.Route{{Config: config.RouteConfig{Name: "app1"}, Handler: stub}},
+		router.WithRootRoute("app1"),
+	)
+	srv := httptest.NewServer(rt)
+	defer srv.Close()
+
+	for _, path := range []string{"/", "/orders/123"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("request to %s failed: %v", path, err)
+		}
+		resp.Body.Close()
+		if gotPath != path {
+			t.Fatalf("path %s: expected the root route to see the path unchanged, got %q", path, gotPath)
+		}
+	}
+
+	// The reserved discovery path must still be served, not swallowed by the root route.
+	resp, err := http.Get(srv.URL + "/_")
+	if err != nil {
+		t.Fatalf("request to /_ failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/_: expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Endpoints []struct {
+			Name string `json:"name"`
+		} `json:"endpoints"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("/_: decoding body: %v", err)
+	}
+	if len(body.Endpoints) != 1 || body.Endpoints[0].Name != "app1" {
+		t.Fatalf("/_: unexpected endpoints: %+v", body.Endpoints)
+	}
+}
+
 func TestRouter_DiscoveryTakesPrecedenceAndListsRoutes(t *testing.T) {
 	rt := router.New([]router.Route{
 		{Config: config.RouteConfig{Name: "app1", Description: "first"}, Handler: http.NotFoundHandler()},

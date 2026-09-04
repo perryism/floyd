@@ -6,24 +6,34 @@
 ## GatewayConfig
 
 The whole process's configuration, resolved once at startup (FR-011): `--host`/`--port` from
-CLI flags, plus one or more named routes loaded from the YAML file at `--config`. One instance
-per running gateway process; a process now serves as many routes as its config file lists
-(previously exactly one — see research.md §5/§5r).
+CLI flags, plus the top-level options and named routes loaded from the YAML file at
+`--config`. One instance per running gateway process; a process now serves as many routes as
+its config file lists (previously exactly one — see research.md §5/§5r).
+
+The `--config` file's top level is a map, not a bare list, so keys besides `endpoints` can be
+added later without another shape change: `{verbose?: bool, single_endpoint?: string,
+endpoints: list[RouteConfig]}`. `endpoints` mirrors the name used by the `/_` discovery
+response (contracts/discovery.md) for the same data.
 
 | Field | Type | Notes |
 |---|---|---|
 | `listen_host` | string | From `--host` |
 | `listen_port` | int | From `--port` |
-| `routes` | list[RouteConfig] | Loaded from the `--config` YAML file, in file order |
+| `routes` | list[RouteConfig] | From the `--config` YAML file's `endpoints` key, in file order |
+| `verbose` | bool | From the `--config` YAML file's top-level `verbose` key; defaults to `false` if omitted. When `true`, the gateway logs each request's method, path, and response status code to its standard log output |
+| `single_endpoint` | string | From the `--config` YAML file's top-level `single_endpoint` key; empty/omitted means disabled (normal per-route subpath matching applies). When set, must equal the name of the sole configured route (see "Routing" below) |
 
 **Validation rules**:
 - `--config` MUST point to a parseable YAML file, or the gateway fails to start.
-- `routes` MUST be non-empty — a `--config` file listing zero routes is treated as a startup
-  error, not an empty-but-valid gateway (there would be nothing for it to do).
+- `endpoints` MUST be non-empty — a `--config` file listing zero endpoints is treated as a
+  startup error, not an empty-but-valid gateway (there would be nothing for it to do).
 - Every `RouteConfig.name` MUST be unique across the file (case-sensitive) — the gateway fails
   to start on a duplicate rather than silently using whichever loaded last.
 - No `RouteConfig.name` MAY be exactly `_` — that path is reserved for the discovery endpoint
   (research.md §5u).
+- `single_endpoint`, if set, MUST be used only when `endpoints` has exactly one entry, and MUST
+  equal that entry's `name` — the gateway fails to start otherwise. Root-mounting one route
+  chosen out of several configured routes is not supported.
 
 ## RouteConfig
 
@@ -59,6 +69,11 @@ requests (research.md §5s):
 - The exact path `/_` is checked first, ahead of route matching, and always returns the
   discovery listing (research.md §5u, `contracts/discovery.md`) regardless of HTTP method —
   it is not itself a route and never proxies anywhere.
+- If `GatewayConfig.single_endpoint` is set, first-segment matching and stripping are bypassed
+  entirely (after the `/_` check above): every request goes straight to that one route's
+  handler chain with its path unchanged, so `/orders/123` reaches the backend as `/orders/123`,
+  not stripped to anything. The route's own `name` plays no part in matching in this mode —
+  it exists only to confirm `single_endpoint` names the right (and only) route.
 
 ## HandlerRef
 

@@ -5,7 +5,6 @@ import uuid
 
 from gateway_handler_sdk import HttpMessage, RequestHandler
 
-
 class AddRequestIdHandler(RequestHandler):
     def process_request(self, request: HttpMessage) -> HttpMessage:
         if "x-request-id" not in request.headers:

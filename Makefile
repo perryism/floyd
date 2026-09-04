@@ -1,4 +1,4 @@
-.PHONY: build test test-go test-python lint lint-go lint-python fmt proto venv clean
+.PHONY: build install test test-go test-python lint lint-go lint-python fmt proto venv clean
 
 GO_BIN     := gateway
 PYTHON     ?= python3
@@ -8,6 +8,10 @@ VENV_PYTHON := $(VENV)/bin/python3
 ## Build the gateway binary into ./gateway
 build:
 	go build -o $(GO_BIN) ./cmd/gateway
+
+## Build and install the gateway binary into $(go env GOPATH)/bin
+install: build
+	install -m 0755 $(GO_BIN) $$(go env GOPATH)/bin/$(GO_BIN)
 
 ## Run the full test suite (Go + Python). Spawns real Python worker processes, so it needs
 ## handlers-sdk installed into $(VENV) — run `make venv` once first.

@@ -30,20 +30,46 @@ type Route struct {
 type Router struct {
 	byName map[string]Route
 	routes []Route // preserves --config file order, for discovery
+	root   *Route  // set by WithRootRoute; when non-nil, bypasses first-segment matching
+}
+
+// Option configures a Router beyond its routes.
+type Option func(*Router)
+
+// WithRootRoute mounts the named route at the gateway's root: every path except the reserved
+// discovery path (/_) is delegated to it unchanged, with no first-segment matching or
+// stripping (data-model.md GatewayConfig.single_endpoint). If name doesn't match any route,
+// this is a no-op — config.Parse is responsible for rejecting that case before the gateway
+// ever builds a Router.
+func WithRootRoute(name string) Option {
+	return func(rt *Router) {
+		if r, ok := rt.byName[name]; ok {
+			rt.root = &r
+		}
+	}
 }
 
 // New builds a Router from routes, in --config file order.
-func New(routes []Route) *Router {
+func New(routes []Route, opts ...Option) *Router {
 	byName := make(map[string]Route, len(routes))
 	for _, rt := range routes {
 		byName[rt.Config.Name] = rt
 	}
-	return &Router{byName: byName, routes: routes}
+	router := &Router{byName: byName, routes: routes}
+	for _, opt := range opts {
+		opt(router)
+	}
+	return router
 }
 
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == discoveryPath {
 		rt.serveDiscovery(w)
+		return
+	}
+
+	if rt.root != nil {
+		rt.root.Handler.ServeHTTP(w, r)
 		return
 	}
 

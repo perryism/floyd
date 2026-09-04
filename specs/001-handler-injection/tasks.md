@@ -196,6 +196,169 @@ and description.
 
 ---
 
+## Phase 8: Config Schema — Nest Routes Under `endpoints`, Support Top-Level `verbose`
+
+**Goal**: Change the `--config` YAML file's top-level shape from a bare list of routes to a
+map with an `endpoints` key (aligning it with the `/_` discovery response's existing
+`endpoints` key, contracts/discovery.md) so additional top-level keys can be added later; add
+`verbose` as the first such key, purely as a demonstration that the top level now accepts more
+than one key — no verbose-logging *behavior* is implemented here, since none was requested
+beyond the schema change itself
+
+**Independent Test**: Point `--config` at a file with `verbose: true` and an `endpoints:` list;
+confirm the gateway starts and serves those routes exactly as before. Confirm a file that omits
+`verbose` still starts (defaults to `false`), and a file with an empty or missing `endpoints`
+key fails to start with the same "no routes configured" error as before.
+
+- [X] T025 In `internal/config/config.go`, replace the top-level YAML unmarshal target: add
+  `type yamlConfig struct { Verbose bool \`yaml:"verbose"\`; Endpoints []yamlRoute
+  \`yaml:"endpoints"\` }`, rename `loadRoutes` to `loadConfig` and change it to unmarshal into
+  `yamlConfig` instead of `var raw []yamlRoute`, returning `([]RouteConfig, bool, error)` (routes
+  plus the verbose flag); add `GatewayConfig.Verbose bool` and populate it from `loadConfig`'s
+  result in `Parse` (data-model.md `GatewayConfig`)
+- [X] T026 In `internal/config/config.go`'s `loadConfig`, update the empty-list check from
+  `len(raw) == 0` to `len(raw.Endpoints) == 0` and adjust its error message from "defines no
+  routes" to "defines no endpoints" (depends on T025)
+- [X] T027 [P] Update `examples/config.yaml`: nest the three existing route entries under an
+  `endpoints:` key (indent each `- name: ...` entry one level), and add a top-level `verbose:
+  true` line above it demonstrating the new key (depends on T025)
+- [X] T028 [P] Update `tests/unit/config_test.go`: re-indent every `writeConfigFile` YAML
+  fixture under an `endpoints:` key (all tests except
+  `TestConfig_Parse_UnparseableConfigFile`, whose fixture is deliberately invalid YAML and
+  needs no change), including `TestConfig_Parse_EmptyRoutesList`'s fixture becoming `endpoints:
+  []`; add `TestConfig_Parse_VerboseFlag` asserting `verbose: true` sets `cfg.Verbose == true`
+  and that omitting `verbose` entirely defaults it to `false` (depends on T025, T026)
+- [X] T029 [P] Update the config.yaml snippets in `README.md` (~lines 16-25) and
+  `specs/001-handler-injection/quickstart.md` (~lines 26-35) to the new nested `endpoints:`
+  shape, and add `verbose` to each doc's field-by-field description list (depends on T025)
+- [X] T030 [P] Update `specs/001-handler-injection/data-model.md`'s `GatewayConfig` table: add a
+  `verbose` field row (`bool`, defaults to `false`), and note the `--config` file's top-level
+  shape is now `{verbose?: bool, endpoints: list[RouteConfig]}` rather than a bare list,
+  matching contracts/discovery.md's `endpoints` key (depends on T025)
+- [X] T031 Run `make lint` and `make test` to confirm the schema change compiles and every
+  existing and new config test passes (depends on T025-T030)
+
+**Checkpoint**: `--config` files use the nested `endpoints:` shape and accept a top-level
+`verbose` key; example, docs, and tests are aligned to the new shape
+
+---
+
+## Phase 9: Verbose Request Logging
+
+**Goal**: Wire up the `verbose` config flag added in Phase 8 (there, deliberately parsed but
+left unused) — when true, log each request's method, URL path, and final response status code
+to the gateway's standard log output, for every request the gateway serves (a matched route,
+`ROUTE_NOT_FOUND`, discovery, and a handler rejection/error alike, since they all ultimately
+write a response through the same top-level handler)
+
+**Independent Test**: Start the gateway with `verbose: true` and send a request; confirm a log
+line appears containing the request's method, path, and status code. Start it with `verbose:
+false` (or omitted) and confirm no such line appears while the request still succeeds normally.
+
+- [X] T032 In `internal/observability`, add `requestlog.go`: a `LogVerboseRequest(method, path
+  string, status int)` function (mirrors `LogHandlerExecution`'s seam pattern in log.go) that
+  writes one log line via the standard `log` package, e.g. `api-gateway: GET /app1/foo -> 200`
+- [X] T033 In `internal/observability/requestlog.go`, add `VerboseRequestLogger(next
+  http.Handler) http.Handler`: middleware that wraps the `http.ResponseWriter` to capture the
+  status code passed to `WriteHeader` (defaulting to 200 if `next` never calls it explicitly),
+  calls `next.ServeHTTP`, then calls `LogVerboseRequest` with `r.Method`, `r.URL.Path`, and the
+  captured status — reading `r.URL.Path` before `next` runs, since `internal/router.Router`
+  clones the request before stripping the matched segment, so the original request passed to
+  this middleware always keeps the un-stripped inbound path (depends on T032)
+- [X] T034 In `cmd/gateway/main.go`, wrap `topRouter` with `observability.VerboseRequestLogger`
+  when `cfg.Verbose` is true, before assigning `server.Handler`, so every request is logged
+  when verbose is on (depends on T033, and on Phase 8's T025 for `GatewayConfig.Verbose`)
+- [X] T035 [P] New unit test `tests/unit/requestlog_test.go` for `internal/observability`:
+  confirm `VerboseRequestLogger` logs a line containing the method, path, and status for a
+  stub `http.HandlerFunc` that writes a given status; confirm it defaults to 200 when the
+  wrapped handler never calls `WriteHeader` (depends on T032, T033)
+- [X] T036 [P] New integration test `tests/integration/verbose_logging_test.go`: start a test
+  gateway with `verbose: true`, redirect the standard logger's output (`log.SetOutput`) to a
+  buffer, send a request, and confirm the buffer contains the request's method/path/status;
+  confirm no such line appears when `verbose` is omitted (depends on T034)
+- [X] T037 Update the `verbose` field description added in Phase 8's T029 (`README.md`,
+  `specs/001-handler-injection/quickstart.md`) to state what it now actually does: logs each
+  request's method, path, and response status to the gateway's standard log output (depends on
+  T034)
+
+**Checkpoint**: `verbose: true` produces one log line per request with method, path, and status
+code; `verbose` omitted/false produces none, and request handling itself is unchanged either way
+
+---
+
+## Phase 10: Single-Endpoint Root Mounting (no subpath prefix)
+
+**Goal**: Support an optional top-level `single_endpoint: <name>` config key that, when set,
+mounts that one endpoint at the gateway's root — every path except the reserved `/_` discovery
+endpoint forwards straight to that route's handler chain and backend with the path unchanged
+(no first-segment stripping), instead of requiring a `/<name>/...` prefix. Restricted to the
+"exactly one endpoint" case the user described: the gateway fails to start if `single_endpoint`
+is set while `endpoints` has more than one entry, or if its value doesn't match that sole
+entry's `name` — promoting one endpoint to root *among several* configured routes is a
+different, unrequested feature and is deliberately not supported here.
+
+**Independent Test**: Configure `single_endpoint: app1` with exactly one endpoint named `app1`;
+confirm `GET /` and `GET /orders/123` both reach `app1`'s backend with the full original path
+unchanged (`/orders/123`, not stripped to anything). Confirm `GET /_` still returns the
+discovery listing. Confirm the gateway fails to start if `single_endpoint` doesn't match the
+sole endpoint's name, or if it's set alongside more than one configured endpoint.
+
+- [X] T038 In `internal/config/config.go`, add `SingleEndpoint string
+  \`yaml:"single_endpoint"\`` to `yamlConfig`, and change `loadConfig`'s signature from
+  `([]RouteConfig, bool, error)` to `([]RouteConfig, yamlConfig, error)` (returning the whole
+  decoded `yamlConfig` instead of just `Verbose`, so `Parse` can read both `Verbose` and the
+  new `SingleEndpoint` without the return tuple growing again next time); add
+  `GatewayConfig.SingleEndpoint string` (empty means disabled) populated from it in `Parse`.
+  After building `routes`, if `raw.SingleEndpoint != ""`: fail with a descriptive error if
+  `len(routes) != 1`, and fail with a descriptive error if `raw.SingleEndpoint != routes[0].Name`
+  (data-model.md `GatewayConfig`)
+- [X] T039 [P] In `internal/router/router.go`, add a functional-option constructor: `type
+  Option func(*Router)` and `func WithRootRoute(name string) Option` that, if `name` matches a
+  configured route's name, sets a new `root *Route` field on `Router` to that route; change
+  `New(routes []Route) *Router` to `New(routes []Route, opts ...Option) *Router`, applying
+  `opts` after building `byName`. In `ServeHTTP`, after the existing `discoveryPath` check and
+  before first-segment matching, add: if `rt.root != nil`, delegate directly to
+  `rt.root.Handler.ServeHTTP(w, r)` with `r` unmodified (no path stripped) and return — this
+  bypasses first-segment matching entirely, so a root-mounted route's own `name` is never
+  looked for in the path (research.md "Routing" in data-model.md)
+- [X] T040 In `cmd/gateway/main.go`, when `cfg.SingleEndpoint != ""`, pass
+  `router.WithRootRoute(cfg.SingleEndpoint)` to `router.New(routes, ...)` when building
+  `topRouter` (depends on T038, T039)
+- [X] T041 [P] New unit tests in `tests/unit/config_test.go`: `TestConfig_Parse_SingleEndpoint`
+  asserting `cfg.SingleEndpoint` is set correctly when it matches the sole configured
+  endpoint's name; `TestConfig_Parse_SingleEndpointMismatch` asserting an error when
+  `single_endpoint` doesn't match the sole endpoint's name; and
+  `TestConfig_Parse_SingleEndpointWithMultipleEndpoints` asserting an error when
+  `single_endpoint` is set alongside two or more `endpoints` entries (depends on T038)
+- [X] T042 [P] New unit test `TestRouter_WithRootRoute_ServesAnyPathUnprefixed` in
+  `tests/unit/router_test.go`: build a `Router` via `router.New(routes,
+  router.WithRootRoute("app1"))` with one route named `app1`; confirm both `GET /` and `GET
+  /orders/123` reach that route's handler with `r.URL.Path` unchanged; confirm `GET /_` still
+  returns the discovery listing rather than being swallowed by the root route (depends on T039)
+- [X] T043 [P] In `tests/testutil/gateway.go`, add `WithRootRoute(name string) Option`
+  mirroring `cmd/gateway/main.go`'s wiring from T040 — passes `router.WithRootRoute(name)`
+  through to `router.New` inside `NewTestGateway` (parallel to Phase 9's `WithVerbose`,
+  depends on T039)
+- [X] T044 [P] New integration test `tests/integration/single_endpoint_test.go`: build a real
+  test gateway with one route via `testutil.NewTestGateway(t, []testutil.TestRoute{{Name:
+  "app1", Backend: backend}}, testutil.WithRootRoute("app1"))`; confirm requests to `/` and to
+  `/orders/123` both reach the backend with the same unmodified path, and that `/_` still
+  returns the discovery listing (depends on T040, T043)
+- [X] T045 [P] Update `README.md` and `specs/001-handler-injection/quickstart.md` with a
+  `single_endpoint` example and description (optional, valid only with exactly one configured
+  endpoint, routes every path — including `/` — to that endpoint's `dest` unchanged); update
+  `specs/001-handler-injection/data-model.md`'s `GatewayConfig` table with a `single_endpoint`
+  field row and its validation rule (depends on T038)
+- [X] T046 Run `make lint` and `make test` to confirm the new field, router behavior, and every
+  existing and new test all pass (depends on T038-T045)
+
+**Checkpoint**: `single_endpoint: <name>` mounts that one configured endpoint at the gateway's
+root with paths passed through unchanged; discovery (`/_`) still works; startup fails clearly
+if `single_endpoint` doesn't match the sole endpoint's name or if more than one endpoint is
+configured alongside it
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -207,6 +370,16 @@ and description.
 - **Cross-cutting (Phase 6)**: Depends on Foundational; independent of US1–US3, so it can run
   in parallel with Phases 3–5 if staffed separately
 - **Polish (Phase 7)**: Depends on everything above being in place
+- **Config schema (Phase 8)**: Depends only on Foundational (it reworks `internal/config`,
+  which Phase 2 already established) — independent of Phases 3–7, so it can run in parallel
+  with any of them
+- **Verbose request logging (Phase 9)**: Depends on Phase 8 (needs `GatewayConfig.Verbose` to
+  exist) and Foundational (wraps `topRouter` from `cmd/gateway/main.go`); independent of
+  Phases 3–7
+- **Single-endpoint root mounting (Phase 10)**: Depends on Phase 8 (T038 reuses/extends
+  `loadConfig`'s `yamlConfig` return value introduced there) and Foundational (`internal/router`
+  and `cmd/gateway/main.go`); independent of Phases 3–7 and Phase 9 (a different config key,
+  no shared code path with verbose logging)
 
 ### Within Foundational
 
@@ -248,6 +421,20 @@ T005/T006/T007/T002 all landing first.
   through `/speckit-specify`/`/speckit-clarify`. If you want them as formally traceable as
   US1–US3, consider a follow-up spec amendment (e.g. an FR-013 and a short user story) — not
   done here since it wasn't asked for.
+- Likewise, Phase 8 (the `endpoints`/`verbose` config schema change) and Phase 9 (wiring
+  `verbose` up to actual request logging) both went straight to `/speckit-tasks` without a
+  `/speckit-plan` amendment first, since neither introduces an architectural decision beyond
+  what's already in plan.md — Phase 8 reshapes `internal/config`'s YAML unmarshal target, and
+  Phase 9 adds one small, self-contained logging middleware in `internal/observability`.
+  Phase 9 supersedes Phase 8's note that `verbose` was "deliberately unused beyond being parsed
+  and stored" — it's now wired to something.
+- Phase 10 (`single_endpoint`) also skipped a `/speckit-plan` amendment for the same reason.
+  Its scope is deliberately narrow: root-mounting is valid *only* when exactly one endpoint is
+  configured, matching what was asked for. Supporting root-mounting for one endpoint chosen
+  out of *several* configured routes (e.g. `single_endpoint: app1` alongside `app2`, `app3`)
+  is a different feature with real ambiguity to resolve (does `app2` still need a prefix? does
+  it become unreachable? does root-mounting take priority over prefix matching for every
+  route?) and isn't implemented — if you want that, it needs its own follow-up.
 - Every existing US1/US2/US3 integration test needs a route-name prefix added to its request
   URLs — there is no more "no route configured" mode; every request now needs a route to match.
 - [P] tasks touch different files with no unmet dependency — safe to parallelize

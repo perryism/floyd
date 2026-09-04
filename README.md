@@ -11,17 +11,20 @@ make build
 make venv   # once, to create .venv with a matching handlers-sdk + protobuf install
 ```
 
-`--config` points at a YAML file listing every route this process serves:
+`--config` points at a YAML file listing every route this process serves, under an `endpoints`
+key (matching the `/_` discovery response's own `endpoints` key below):
 
 ```yaml
 # config.yaml
-- name: app1
-  description: The public orders API.
-  dest: http://localhost:3000
-- name: app2
-  description: Internal admin service.
-  dest: http://localhost:3001
-  handlers: ./handlers/app1.py
+verbose: true
+endpoints:
+  - name: app1
+    description: The public orders API.
+    dest: http://localhost:3000
+  - name: app2
+    description: Internal admin service.
+    dest: http://localhost:3001
+    handlers: ./handlers/app1.py
 ```
 
 ```bash
@@ -30,10 +33,28 @@ GATEWAY_PYTHON="$(pwd)/.venv/bin/python3" \
 ```
 
 - `--host` / `--port`: where this gateway process itself listens.
-- `--config`: each route has a `name` (also its first path segment — `/app1/...` routes to
+- `--config`: top-level `verbose` (optional, defaults to `false`; see below) plus `endpoints`,
+  a list where each route has a `name` (also its first path segment — `/app1/...` routes to
   `app1`, with that segment stripped before forwarding), a `dest`, an optional `description`
   (for operators; the gateway never reads it), and optional `handlers` (one path, or a list to
   chain several in order — omit for plain pass-through on that route).
+- `verbose`: when `true`, the gateway logs each request's method, path, and response status
+  code to its standard log output.
+- `single_endpoint`: optional; only valid when `endpoints` has exactly one entry, and its value
+  must match that entry's `name`. Mounts that one endpoint at the gateway's root instead of
+  under `/<name>/...` — every path, including `/` itself, forwards to its `dest` unchanged:
+
+  ```yaml
+  # config.yaml
+  single_endpoint: app1
+  endpoints:
+    - name: app1
+      description: The public orders API.
+      dest: http://localhost:3000
+  ```
+
+  A request to `http://<gateway>/orders/123` forwards to `http://localhost:3000/orders/123`
+  (no path stripped, no `/app1` prefix needed). `GET /_` still returns the discovery listing.
 - `GATEWAY_PYTHON`: the Python interpreter used to launch handler workers. Defaults to
   whatever `python3` resolves to on `$PATH` — set this explicitly rather than relying on that
   default, especially if `python3` happens to be a shared/pyenv/conda environment: the

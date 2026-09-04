@@ -8,22 +8,27 @@
 #
 # See README.md and specs/001-handler-injection/quickstart.md for the full reference.
 
-- name: app1
-  description: A route with no handlers at all -- plain pass-through proxying.
-  dest: http://127.0.0.1:18081
+# When true, the gateway logs each request's method, path, and response status to its
+# standard log output.
+verbose: true
 
-- name: app2
-  description: >-
-    A route with a single request handler that stamps every request with an
-    X-Request-Id header if the caller didn't already send one.
-  dest: http://127.0.0.1:18082
-  handlers: ./examples/handlers/add_request_id.py
+endpoints:
+  - name: app1
+    description: A route with no handlers at all -- plain pass-through proxying.
+    dest: http://127.0.0.1:18081
 
-- name: app3
-  description: >-
-    A route chaining two handlers in order -- "handlers" accepts a list, not
-    just a single path, to run several handlers in sequence.
-  dest: http://127.0.0.1:18083
-  handlers:
-    - ./examples/handlers/null_handler.py
-    - ./examples/handlers/add_request_id.py
+  - name: app2
+    description: >-
+      A route with a single request handler that stamps every request with an
+      X-Request-Id header if the caller didn't already send one.
+    dest: http://127.0.0.1:18082
+    handlers: ./examples/handlers/add_request_id.py
+
+  - name: app3
+    description: >-
+      A route chaining two handlers in order -- "handlers" accepts a list, not
+      just a single path, to run several handlers in sequence.
+    dest: http://127.0.0.1:18083
+    handlers:
+      - ./examples/handlers/null_handler.py
+      - ./examples/handlers/add_request_id.py

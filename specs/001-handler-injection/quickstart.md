@@ -25,21 +25,42 @@ standard error envelope (`contracts/error-format.md`) instead of forwarding it (
 
 ```yaml
 # config.yaml
-- name: app1
-  description: The public orders API.
-  dest: http://localhost:3000
-- name: app2
-  description: Internal admin service — validates every request.
-  dest: http://localhost:3001
-  handlers: ./handlers/app1.py
+verbose: true
+endpoints:
+  - name: app1
+    description: The public orders API.
+    dest: http://localhost:3000
+  - name: app2
+    description: Internal admin service — validates every request.
+    dest: http://localhost:3001
+    handlers: ./handlers/app1.py
 ```
 
-- `name`: required, unique, no `/` — also the first path segment requests are matched against.
-- `description`: optional, for operators only; the gateway never reads it.
-- `dest`: required, the backend this route proxies to.
-- `handlers`: optional; one file path, or a YAML list to chain multiple in order
-  (`handlers: [./handlers/a.py, ./handlers/b.py]`). Omit for plain pass-through on that route
-  (FR-009).
+- `verbose`: optional, defaults to `false`. When `true`, the gateway logs each request's
+  method, path, and response status code to its standard log output.
+- `endpoints`: the list of routes, each with:
+  - `name`: required, unique, no `/` — also the first path segment requests are matched against.
+  - `description`: optional, for operators only; the gateway never reads it.
+  - `dest`: required, the backend this route proxies to.
+  - `handlers`: optional; one file path, or a YAML list to chain multiple in order
+    (`handlers: [./handlers/a.py, ./handlers/b.py]`). Omit for plain pass-through on that route
+    (FR-009).
+- `single_endpoint`: optional; only valid when `endpoints` has exactly one entry, and its
+  value must match that entry's `name`. Mounts that endpoint at the gateway's root — every
+  path (including `/`) forwards to its `dest` unchanged, with no `/<name>/...` prefix needed:
+
+  ```yaml
+  # config.yaml
+  single_endpoint: app1
+  endpoints:
+    - name: app1
+      description: The public orders API.
+      dest: http://localhost:3000
+  ```
+
+  The gateway fails to start if `single_endpoint` doesn't match the sole endpoint's `name`, or
+  if it's set alongside more than one `endpoints` entry — root-mounting one route out of
+  several isn't supported.
 
 ## 3. Launch the gateway
 

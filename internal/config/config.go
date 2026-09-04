@@ -44,13 +44,26 @@ type RouteConfig struct {
 	Handlers    []HandlerRef
 }
 
-// GatewayConfig is the whole process's configuration: --host/--port plus the routes loaded
-// from --config. One instance per running gateway process; a process now serves as many
-// routes as its config file lists (previously exactly one — see research.md §5/§5r).
+// GatewayConfig is the whole process's configuration: --host/--port plus the routes and
+// top-level options loaded from --config. One instance per running gateway process; a process
+// now serves as many routes as its config file lists (previously exactly one — see
+// research.md §5/§5r).
 type GatewayConfig struct {
-	ListenHost string
-	ListenPort int
-	Routes     []RouteConfig
+	ListenHost     string
+	ListenPort     int
+	Routes         []RouteConfig
+	Verbose        bool
+	SingleEndpoint string
+}
+
+// yamlConfig mirrors the --config YAML file's top-level shape: top-level options alongside the
+// "endpoints" list, so more top-level keys can be added later without changing the file's
+// shape from a bare list to a map more than once (contracts/discovery.md already uses
+// "endpoints" for the same data in the /_ response, so this aligns the two).
+type yamlConfig struct {
+	Verbose        bool        `yaml:"verbose"`
+	SingleEndpoint string      `yaml:"single_endpoint"`
+	Endpoints      []yamlRoute `yaml:"endpoints"`
 }
 
 // yamlRoute mirrors one route entry in the --config YAML file, before validation/conversion
@@ -116,50 +129,54 @@ func Parse(args []string) (*GatewayConfig, error) {
 		return nil, fmt.Errorf("--config is required")
 	}
 
-	routes, err := loadRoutes(*configPath)
+	routes, raw, err := loadConfig(*configPath)
 	if err != nil {
 		return nil, err
 	}
 
 	return &GatewayConfig{
-		ListenHost: *host,
-		ListenPort: *port,
-		Routes:     routes,
+		ListenHost:     *host,
+		ListenPort:     *port,
+		Routes:         routes,
+		Verbose:        raw.Verbose,
+		SingleEndpoint: raw.SingleEndpoint,
 	}, nil
 }
 
-// loadRoutes reads and validates the --config YAML file into a list of RouteConfig.
-func loadRoutes(path string) ([]RouteConfig, error) {
+// loadConfig reads and validates the --config YAML file into a list of RouteConfig plus the
+// decoded top-level options (yamlConfig, so Parse can read Verbose/SingleEndpoint/... without
+// this return signature growing every time a new top-level option is added).
+func loadConfig(path string) ([]RouteConfig, yamlConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading --config %q: %w", path, err)
+		return nil, yamlConfig{}, fmt.Errorf("reading --config %q: %w", path, err)
 	}
 
-	var raw []yamlRoute
+	var raw yamlConfig
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parsing --config %q: %w", path, err)
+		return nil, yamlConfig{}, fmt.Errorf("parsing --config %q: %w", path, err)
 	}
-	if len(raw) == 0 {
-		return nil, fmt.Errorf("--config %q defines no routes", path)
+	if len(raw.Endpoints) == 0 {
+		return nil, yamlConfig{}, fmt.Errorf("--config %q defines no endpoints", path)
 	}
 
-	seen := make(map[string]bool, len(raw))
-	routes := make([]RouteConfig, 0, len(raw))
-	for _, r := range raw {
+	seen := make(map[string]bool, len(raw.Endpoints))
+	routes := make([]RouteConfig, 0, len(raw.Endpoints))
+	for _, r := range raw.Endpoints {
 		if err := validateRouteName(r.Name, seen); err != nil {
-			return nil, fmt.Errorf("%q: %w", path, err)
+			return nil, yamlConfig{}, fmt.Errorf("%q: %w", path, err)
 		}
 		seen[r.Name] = true
 
 		destURL, err := url.Parse(r.Dest)
 		if err != nil || destURL.Scheme == "" || destURL.Host == "" {
-			return nil, fmt.Errorf("route %q: dest %q is not a well-formed address", r.Name, r.Dest)
+			return nil, yamlConfig{}, fmt.Errorf("route %q: dest %q is not a well-formed address", r.Name, r.Dest)
 		}
 
 		handlers := make([]HandlerRef, 0, len(r.Handlers))
 		for i, p := range r.Handlers {
 			if _, err := os.Stat(p); err != nil {
-				return nil, fmt.Errorf("route %q: handlers %q could not be loaded: %w", r.Name, p, err)
+				return nil, yamlConfig{}, fmt.Errorf("route %q: handlers %q could not be loaded: %w", r.Name, p, err)
 			}
 			handlers = append(handlers, HandlerRef{
 				Name:      handlerName(p),
@@ -177,7 +194,20 @@ func loadRoutes(path string) ([]RouteConfig, error) {
 		})
 	}
 
-	return routes, nil
+	if raw.SingleEndpoint != "" {
+		if len(routes) != 1 {
+			return nil, yamlConfig{}, fmt.Errorf(
+				"%q: single_endpoint %q is only valid when exactly one endpoint is configured, got %d",
+				path, raw.SingleEndpoint, len(routes))
+		}
+		if raw.SingleEndpoint != routes[0].Name {
+			return nil, yamlConfig{}, fmt.Errorf(
+				"%q: single_endpoint %q does not match the configured endpoint's name %q",
+				path, raw.SingleEndpoint, routes[0].Name)
+		}
+	}
+
+	return routes, raw, nil
 }
 
 func validateRouteName(name string, seen map[string]bool) error {

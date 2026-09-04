@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"api-gateway/internal/config"
 	"api-gateway/internal/handler"
 	"api-gateway/internal/handler/workerpool"
+	"api-gateway/internal/observability"
 	"api-gateway/internal/proxy"
 	"api-gateway/internal/router"
 )
@@ -23,12 +25,38 @@ type TestRoute struct {
 	Handlers    []config.HandlerRef
 }
 
+// Option configures NewTestGateway beyond its routes, mirroring a top-level --config option
+// from cmd/gateway/main.go.
+type Option func(*options)
+
+type options struct {
+	verbose  bool
+	rootName string
+}
+
+// WithVerbose wraps the test gateway with observability.VerboseRequestLogger, mirroring
+// cmd/gateway/main.go's own wrapping when GatewayConfig.Verbose is true.
+func WithVerbose() Option {
+	return func(o *options) { o.verbose = true }
+}
+
+// WithRootRoute mounts the named route at the gateway's root, mirroring cmd/gateway/main.go's
+// own router.WithRootRoute wiring when GatewayConfig.SingleEndpoint is set.
+func WithRootRoute(name string) Option {
+	return func(o *options) { o.rootName = name }
+}
+
 // NewTestGateway wires up a real internal/router.Router — real worker-pool-supervised Python
 // processes, one pool per (route, HandlerRef) pair — covering the given routes, and returns it
 // as an httptest.Server. Pools run with a single worker (tests don't need concurrency) and are
 // stopped automatically via t.Cleanup, same as the pools themselves.
-func NewTestGateway(t *testing.T, routes []TestRoute) *httptest.Server {
+func NewTestGateway(t *testing.T, routes []TestRoute, opts ...Option) *httptest.Server {
 	t.Helper()
+
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 
 	python := PythonExecutable(t)
 
@@ -65,8 +93,16 @@ func NewTestGateway(t *testing.T, routes []TestRoute) *httptest.Server {
 		})
 	}
 
-	topRouter := router.New(routerRoutes)
-	server := httptest.NewServer(topRouter)
+	var routerOpts []router.Option
+	if o.rootName != "" {
+		routerOpts = append(routerOpts, router.WithRootRoute(o.rootName))
+	}
+	topRouter := router.New(routerRoutes, routerOpts...)
+	var topHandler http.Handler = topRouter
+	if o.verbose {
+		topHandler = observability.VerboseRequestLogger(topRouter)
+	}
+	server := httptest.NewServer(topHandler)
 	t.Cleanup(server.Close)
 	return server
 }
