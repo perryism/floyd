@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/handler"
@@ -58,7 +59,11 @@ func run(args []string) error {
 			handlers = append(handlers, handler.Handler{Ref: ref, Client: pool})
 		}
 
-		runner := handler.NewRunner(rc.Name, proxy.New(rc.Dest), handlers)
+		var proxyOpts []proxy.Option
+		if rc.BackendTimeoutMS > 0 {
+			proxyOpts = append(proxyOpts, proxy.WithTimeout(time.Duration(rc.BackendTimeoutMS)*time.Millisecond))
+		}
+		runner := handler.NewRunner(rc.Name, proxy.New(rc.Dest, proxyOpts...), handlers)
 		routes = append(routes, router.Route{Config: rc, Handler: runner})
 	}
 	defer stopAll(pools)

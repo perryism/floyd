@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -80,7 +81,7 @@ func (rn *Runner) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := rn.forwarder.Forward(r.Context(), msg.Method, msg.Path, headersFromMap(msg.Headers), msg.Body)
 	if err != nil {
-		http.Error(w, "backend unavailable", http.StatusBadGateway)
+		writeBackendError(w, err, rn.routeName, requestID)
 		return
 	}
 
@@ -188,6 +189,26 @@ func writeFailClosed(w http.ResponseWriter, err error, routeName, handlerName st
 		code = observability.CodeHandlerTimeout
 	}
 	observability.WriteError(w, code, "the configured handler failed to process this request", routeName, handlerName)
+}
+
+// writeBackendError renders a Forward failure using the standard error envelope. The
+// underlying error is always logged here — previously it was discarded entirely, which made
+// every backend failure (timeout, connection reset, DNS failure, TLS error, ...) look
+// identical from the outside as a bare "backend unavailable" 502 with no way to diagnose which
+// one actually happened. A timeout (proxy.ErrTimeout) is reported as 504 Gateway Timeout
+// instead of 502, since "the backend took too long" and "the backend refused/reset the
+// connection" call for different operator responses (e.g. raising the configured timeout vs.
+// checking the backend's health).
+func writeBackendError(w http.ResponseWriter, err error, routeName, requestID string) {
+	log.Printf("api-gateway: route %q request %s: backend request failed: %v", routeName, requestID, err)
+
+	code := observability.CodeBackendUnavailable
+	message := "backend unavailable"
+	if errors.Is(err, proxy.ErrTimeout) {
+		code = observability.CodeBackendTimeout
+		message = "backend did not respond in time"
+	}
+	observability.WriteError(w, code, message, routeName, "")
 }
 
 // flattenHeaders converts Go's canonicalized (Title-Case) http.Header into the lowercase

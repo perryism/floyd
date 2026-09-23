@@ -42,6 +42,11 @@ type RouteConfig struct {
 	Description string
 	Dest        *url.URL
 	Handlers    []HandlerRef
+	// BackendTimeoutMS is how long the gateway waits for this route's backend to respond
+	// before giving up, in milliseconds. Zero means "use proxy.DefaultTimeout" — routes
+	// with unusually slow backends (e.g. an LLM API without streaming) can override it here
+	// rather than everyone getting stuck with one fixed global value.
+	BackendTimeoutMS int
 }
 
 // GatewayConfig is the whole process's configuration: --host/--port plus the routes and
@@ -69,10 +74,11 @@ type yamlConfig struct {
 // yamlRoute mirrors one route entry in the --config YAML file, before validation/conversion
 // into RouteConfig.
 type yamlRoute struct {
-	Name        string        `yaml:"name"`
-	Description string        `yaml:"description"`
-	Dest        string        `yaml:"dest"`
-	Handlers    handlersField `yaml:"handlers"`
+	Name             string        `yaml:"name"`
+	Description      string        `yaml:"description"`
+	Dest             string        `yaml:"dest"`
+	Handlers         handlersField `yaml:"handlers"`
+	BackendTimeoutMS int           `yaml:"backend_timeout_ms"`
 }
 
 // handlersField accepts a route's "handlers" YAML value as either one scalar path or a list
@@ -187,10 +193,11 @@ func loadConfig(path string) ([]RouteConfig, yamlConfig, error) {
 		}
 
 		routes = append(routes, RouteConfig{
-			Name:        r.Name,
-			Description: r.Description,
-			Dest:        destURL,
-			Handlers:    handlers,
+			Name:             r.Name,
+			Description:      r.Description,
+			Dest:             destURL,
+			Handlers:         handlers,
+			BackendTimeoutMS: r.BackendTimeoutMS,
 		})
 	}
 

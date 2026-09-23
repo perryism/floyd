@@ -16,6 +16,12 @@ const (
 	CodeHandlerRejectedResponse = "HANDLER_REJECTED_RESPONSE"
 	CodeHandlerTimeout          = "HANDLER_TIMEOUT"
 	CodeHandlerError            = "HANDLER_ERROR"
+	// CodeBackendTimeout is used when the destination backend (e.g. the upstream Claude
+	// API) didn't respond within the configured timeout — distinct from
+	// CodeBackendUnavailable so callers/logs can tell "too slow" apart from "connection
+	// failed", instead of both collapsing into one generic 502.
+	CodeBackendTimeout     = "BACKEND_TIMEOUT"
+	CodeBackendUnavailable = "BACKEND_UNAVAILABLE"
 )
 
 var statusByCode = map[string]int{
@@ -24,6 +30,8 @@ var statusByCode = map[string]int{
 	CodeHandlerRejectedResponse: http.StatusBadGateway,
 	CodeHandlerTimeout:          http.StatusGatewayTimeout,
 	CodeHandlerError:            http.StatusBadGateway,
+	CodeBackendTimeout:          http.StatusGatewayTimeout,
+	CodeBackendUnavailable:      http.StatusBadGateway,
 }
 
 type errorBody struct {
