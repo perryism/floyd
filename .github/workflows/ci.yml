@@ -44,8 +44,17 @@ jobs:
         run: pytest python/tests
 
   build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: [go, python]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64, ext: "" }
+          - { goos: darwin,  goarch: arm64, ext: "" }   # Apple Silicon
+          - { goos: darwin,  goarch: amd64, ext: "" }   # Intel Mac
+          - { goos: windows, goarch: amd64, ext: ".exe" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -54,9 +63,11 @@ jobs:
       - name: Build
         env:
           CGO_ENABLED: "0"
-        run: go build -o gateway ./cmd/gateway
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -o "gateway${{ matrix.ext }}" ./cmd/gateway
       - uses: actions/upload-artifact@v4
         with:
-          name: gateway-linux-amd64
-          path: gateway
+          name: gateway-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: gateway${{ matrix.ext }}
           if-no-files-found: error

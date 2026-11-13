@@ -136,6 +136,27 @@ See [specs/001-handler-injection/quickstart.md](specs/001-handler-injection/quic
 a full walkthrough, and [specs/001-handler-injection/](specs/001-handler-injection/) for the
 feature's spec, plan, and design decisions.
 
+## Release binaries
+
+The [Release workflow](.github/workflows/release.yml) cross-compiles the gateway for
+Linux, macOS, and Windows (amd64 and arm64 each) and publishes them as a GitHub Release.
+
+To cut a release, push a tag starting with `v`:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release then contains `gateway-<os>-<arch>.tar.gz` (Linux/macOS) or
+`gateway-<os>-<arch>.zip` (Windows, containing `gateway.exe`), plus a `checksums.txt`.
+
+To build without releasing, run the workflow manually from the repo's **Actions** tab
+(**Release** → **Run workflow**); the binaries are attached to the run as artifacts.
+
+The binaries are the Go gateway only. Handlers still need Python and `handlers-sdk` installed
+on the machine running the gateway.
+
 ## Development
 
 ```bash
