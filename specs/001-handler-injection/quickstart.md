@@ -45,6 +45,10 @@ endpoints:
   - `handlers`: optional; one file path, or a YAML list to chain multiple in order
     (`handlers: [./handlers/a.py, ./handlers/b.py]`). Omit for plain pass-through on that route
     (FR-009).
+  - `headers`: optional map of header name to value, injected into every request forwarded to
+    this route's backend (overriding same-named headers from the caller or a handler). `${VAR}`
+    in a value is expanded from the gateway's environment at startup; an unset variable is a
+    startup error.
 - `single_endpoint`: optional; only valid when `endpoints` has exactly one entry, and its
   value must match that entry's `name`. Mounts that endpoint at the gateway's root — every
   path (including `/`) forwards to its `dest` unchanged, with no `/<name>/...` prefix needed:

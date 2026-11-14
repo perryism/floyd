@@ -16,6 +16,11 @@ endpoints:
   - name: app1
     description: A route with no handlers at all -- plain pass-through proxying.
     dest: http://127.0.0.1:18081
+    # Headers injected into every request forwarded to this backend. ${VAR} is replaced
+    # from the gateway's environment at startup (startup fails if VAR is unset).
+    # headers:
+    #   API_TOKEN: ${API_TOKEN}
+    #   X_HEADER: foo
 
   - name: app2
     description: >-

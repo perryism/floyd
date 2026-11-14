@@ -47,6 +47,10 @@ type RouteConfig struct {
 	// with unusually slow backends (e.g. an LLM API without streaming) can override it here
 	// rather than everyone getting stuck with one fixed global value.
 	BackendTimeoutMS int
+	// Headers are injected into every request forwarded to this route's backend, overriding
+	// any same-named header from the caller or a request handler. Values from the YAML may
+	// reference environment variables as ${NAME}; they are expanded at startup.
+	Headers map[string]string
 }
 
 // GatewayConfig is the whole process's configuration: --host/--port plus the routes and
@@ -74,11 +78,12 @@ type yamlConfig struct {
 // yamlRoute mirrors one route entry in the --config YAML file, before validation/conversion
 // into RouteConfig.
 type yamlRoute struct {
-	Name             string        `yaml:"name"`
-	Description      string        `yaml:"description"`
-	Dest             string        `yaml:"dest"`
-	Handlers         handlersField `yaml:"handlers"`
-	BackendTimeoutMS int           `yaml:"backend_timeout_ms"`
+	Name             string            `yaml:"name"`
+	Description      string            `yaml:"description"`
+	Dest             string            `yaml:"dest"`
+	Handlers         handlersField     `yaml:"handlers"`
+	BackendTimeoutMS int               `yaml:"backend_timeout_ms"`
+	Headers          map[string]string `yaml:"headers"`
 }
 
 // handlersField accepts a route's "handlers" YAML value as either one scalar path or a list
@@ -192,12 +197,18 @@ func loadConfig(path string) ([]RouteConfig, yamlConfig, error) {
 			})
 		}
 
+		headers, err := expandHeaders(r.Headers)
+		if err != nil {
+			return nil, yamlConfig{}, fmt.Errorf("route %q: %w", r.Name, err)
+		}
+
 		routes = append(routes, RouteConfig{
 			Name:             r.Name,
 			Description:      r.Description,
 			Dest:             destURL,
 			Handlers:         handlers,
 			BackendTimeoutMS: r.BackendTimeoutMS,
+			Headers:          headers,
 		})
 	}
 
@@ -215,6 +226,34 @@ func loadConfig(path string) ([]RouteConfig, yamlConfig, error) {
 	}
 
 	return routes, raw, nil
+}
+
+// expandHeaders resolves ${VAR} references in header values from the process environment.
+// An unset variable is a startup error, so a missing secret can't silently produce a request
+// with an empty credential.
+func expandHeaders(in map[string]string) (map[string]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(in))
+	for name, val := range in {
+		if strings.TrimSpace(name) == "" {
+			return nil, fmt.Errorf("headers: empty header name")
+		}
+		var missing string
+		expanded := os.Expand(val, func(key string) string {
+			v, ok := os.LookupEnv(key)
+			if !ok && missing == "" {
+				missing = key
+			}
+			return v
+		})
+		if missing != "" {
+			return nil, fmt.Errorf("header %q references unset environment variable %q", name, missing)
+		}
+		out[name] = expanded
+	}
+	return out, nil
 }
 
 func validateRouteName(name string, seen map[string]bool) error {

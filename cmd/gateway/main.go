@@ -63,6 +63,9 @@ func run(args []string) error {
 		if rc.BackendTimeoutMS > 0 {
 			proxyOpts = append(proxyOpts, proxy.WithTimeout(time.Duration(rc.BackendTimeoutMS)*time.Millisecond))
 		}
+		if len(rc.Headers) > 0 {
+			proxyOpts = append(proxyOpts, proxy.WithHeaders(rc.Headers))
+		}
 		runner := handler.NewRunner(rc.Name, proxy.New(rc.Dest, proxyOpts...), handlers)
 		routes = append(routes, router.Route{Config: rc, Handler: runner})
 	}

@@ -236,3 +236,36 @@ func writeTempFile(t *testing.T, content string) string {
 	}
 	return path
 }
+
+func TestConfig_Parse_HeadersExpandEnv(t *testing.T) {
+	t.Setenv("API_TOKEN", "s3cret")
+	cfgPath := writeConfigFile(t, `
+endpoints:
+  - name: app1
+    dest: http://localhost:3000
+    headers:
+      API_TOKEN: ${API_TOKEN}
+      X_HEADER: foo
+`)
+	cfg, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	h := cfg.Routes[0].Headers
+	if h["API_TOKEN"] != "s3cret" || h["X_HEADER"] != "foo" {
+		t.Fatalf("unexpected headers: %v", h)
+	}
+}
+
+func TestConfig_Parse_HeadersUnsetEnvFails(t *testing.T) {
+	cfgPath := writeConfigFile(t, `
+endpoints:
+  - name: app1
+    dest: http://localhost:3000
+    headers:
+      API_TOKEN: ${FLOYD_DEFINITELY_UNSET_VAR}
+`)
+	if _, err := config.Parse([]string{"--host", "0.0.0.0", "--port", "1235", "--config", cfgPath}); err == nil {
+		t.Fatal("expected error for unset environment variable")
+	}
+}

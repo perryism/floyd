@@ -31,6 +31,8 @@ var ErrTimeout = errors.New("backend request timed out")
 type Forwarder struct {
 	dest   *url.URL
 	client *http.Client
+	// injected headers are set on every forwarded request, overriding same-named ones.
+	injected map[string]string
 }
 
 // Option customizes Forwarder construction.
@@ -39,6 +41,11 @@ type Option func(*Forwarder)
 // WithTimeout overrides DefaultTimeout for this Forwarder's backend requests.
 func WithTimeout(d time.Duration) Option {
 	return func(f *Forwarder) { f.client.Timeout = d }
+}
+
+// WithHeaders injects fixed headers into every request this Forwarder sends.
+func WithHeaders(h map[string]string) Option {
+	return func(f *Forwarder) { f.injected = h }
 }
 
 // New returns a Forwarder that sends every request to dest.
@@ -90,6 +97,10 @@ func (f *Forwarder) Forward(ctx context.Context, method, path string, headers ht
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
+	}
+
+	for k, v := range f.injected {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := f.client.Do(req)
