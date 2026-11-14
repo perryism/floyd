@@ -88,6 +88,9 @@ func run(args []string) error {
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("api-gateway: listening on %s (%d route(s))", addr, len(cfg.Routes))
+		for _, ip := range reachableIPs(cfg.ListenHost) {
+			log.Printf("api-gateway: reachable at http://%s", net.JoinHostPort(ip, fmt.Sprintf("%d", cfg.ListenPort)))
+		}
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
@@ -119,4 +122,24 @@ func pythonPathOption() []workerpool.Option {
 		return []workerpool.Option{workerpool.WithPythonPath(p)}
 	}
 	return nil
+}
+
+// reachableIPs returns the addresses the gateway can be reached at: the host itself if it
+// was bound to a specific address, or every non-loopback IPv4 address of this machine when
+// bound to a wildcard (0.0.0.0, ::, or empty).
+func reachableIPs(host string) []string {
+	if ip := net.ParseIP(host); host != "" && (ip == nil || !ip.IsUnspecified()) {
+		return []string{host}
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var ips []string
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && !ipn.IP.IsLoopback() && ipn.IP.To4() != nil {
+			ips = append(ips, ipn.IP.String())
+		}
+	}
+	return ips
 }
