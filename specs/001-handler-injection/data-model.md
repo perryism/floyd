@@ -45,12 +45,15 @@ One entry in the YAML config file — a named destination with its own optional 
 | `description` | string | Optional free text for operators; the gateway itself never reads it |
 | `dest` | URL | Required; the backend this route proxies to |
 | `handlers` | list[HandlerRef] | Optional; from the YAML `handlers` key, which accepts either one scalar path or a list, normalized to an ordered list here (FR-005) |
+| `rewrite_paths` | bool | Optional, default `false`. When `true`, root-relative URLs in this route's HTML/CSS responses, `Location`/`Set-Cookie` headers, and Referer-attributable misses are re-prefixed with `/<name>` (research.md §5v, `contracts/path-rewriting.md`) |
 
 **Validation rules**:
 - `dest` MUST be a well-formed address; the gateway fails to start otherwise.
 - Each `HandlerRef.file_path` MUST resolve to a loadable handler at startup, or the gateway
   fails to start (research.md §5r) — a route is never silently left without a handler it was
   configured to have.
+- `rewrite_paths: true` together with a top-level `single_endpoint` is a startup error (the
+  route is mounted at `/`, so there is no prefix to add).
 - A route with no `handlers` behaves as baseline pass-through proxying for that route (FR-009).
 
 ## Routing
@@ -69,6 +72,9 @@ requests (research.md §5s):
 - The exact path `/_` is checked first, ahead of route matching, and always returns the
   discovery listing (research.md §5u, `contracts/discovery.md`) regardless of HTTP method —
   it is not itself a route and never proxies anywhere.
+- On no match, *before* answering 404: if the request's `Referer` path starts with the name of a
+  route that has `rewrite_paths: true`, respond `307` to `/<that name><path><?query>` instead
+  (research.md §5v item 3). Real route matches and `/_` always take precedence.
 - If `GatewayConfig.single_endpoint` is set, first-segment matching and stripping are bypassed
   entirely (after the `/_` check above): every request goes straight to that one route's
   handler chain with its path unchanged, so `/orders/123` reaches the backend as `/orders/123`,

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"api-gateway/internal/handler/workerpool"
 	"api-gateway/internal/observability"
 	"api-gateway/internal/proxy"
+	"api-gateway/internal/rewrite"
 )
 
 // Handler pairs one configured --handlers file with its running worker pool.
@@ -35,6 +37,67 @@ type Runner struct {
 	routeName string
 	forwarder *proxy.Forwarder
 	handlers  []Handler
+
+	// Path rewriting (research.md §5v); zero value = disabled.
+	rewritePrefix string // "/<route name>"
+	destOrigin    string // "scheme://host" of the route's backend, for Location rewriting
+}
+
+// WithPathRewrite enables root-relative URL rewriting for this route's responses: prefix is
+// "/<route name>", destOrigin the backend's "scheme://host[:port]".
+func (rn *Runner) WithPathRewrite(prefix, destOrigin string) *Runner {
+	rn.rewritePrefix, rn.destOrigin = prefix, destOrigin
+	return rn
+}
+
+// rewriteResponse applies path rewriting to the response about to be written.
+func (rn *Runner) rewriteResponse(m *workerpool.Message) {
+	if rn.rewritePrefix == "" {
+		return
+	}
+	hdr := make(map[string]string, len(m.Headers))
+	for k, v := range m.Headers {
+		hdr[k] = v
+	}
+	for k, v := range hdr {
+		switch strings.ToLower(k) {
+		case "location":
+			hdr[k] = rewrite.Location(rn.rewritePrefix, rn.destOrigin, v)
+		case "set-cookie":
+			hdr[k] = rewrite.SetCookie(rn.rewritePrefix, v)
+		}
+	}
+	m.Headers = hdr
+
+	var ctype, enc string
+	for k, v := range m.Headers {
+		switch strings.ToLower(k) {
+		case "content-type":
+			ctype = strings.ToLower(v)
+		case "content-encoding":
+			enc = v
+		}
+	}
+	if enc != "" && enc != "identity" {
+		log.Printf("api-gateway: route %q: not rewriting %q-encoded body", rn.routeName, enc)
+		return
+	}
+	if len(m.Body) == 0 || len(m.Body) > rewrite.MaxBodyBytes {
+		return
+	}
+	switch {
+	case strings.HasPrefix(ctype, "text/html"):
+		m.Body = rewrite.HTML(rn.rewritePrefix, m.Body)
+	case strings.HasPrefix(ctype, "text/css"):
+		m.Body = rewrite.CSS(rn.rewritePrefix, m.Body)
+	default:
+		return
+	}
+	for k := range m.Headers {
+		if strings.EqualFold(k, "content-length") {
+			m.Headers[k] = strconv.Itoa(len(m.Body))
+		}
+	}
 }
 
 // NewRunner builds a Runner for one route. handlers runs in the given order for both the
@@ -107,6 +170,8 @@ func (rn *Runner) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		respMsg = *result
 	}
+
+	rn.rewriteResponse(&respMsg)
 
 	for k, v := range headersFromMap(respMsg.Headers) {
 		w.Header()[k] = v

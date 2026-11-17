@@ -203,6 +203,83 @@ second response format to keep consistent as routes change); making the endpoint
 configurable/toggleable (rejected as unwarranted complexity for a read-only listing with no
 sensitive fields — YAGNI).
 
+## 5v. Root-relative paths in proxied pages (`/assets.css` under `/foo/`)
+
+**Problem**: route `foo` is reached at `http://gateway/foo/`, and the gateway strips `/foo`
+before forwarding (§5s). The backend's HTML says `<link href="/assets.css">`. The browser
+resolves that against the gateway's *origin*, requests `http://gateway/assets.css`, and the
+router answers 404 `ROUTE_NOT_FOUND` — blank page. `<base href="/foo/">` does **not** help:
+root-relative URLs ignore `<base>`'s path. Same failure for `fetch('/api/x')`, `Location: /login`
+redirects, and `Set-Cookie: ...; Path=/`.
+
+**Decision**: a per-route opt-in `rewrite_paths: true` that applies three complementary
+mechanisms, each covering what the others can't:
+
+1. **Body rewrite (HTML + CSS only)** — for responses with `Content-Type` `text/html` or
+   `text/css`, prefix root-relative URLs with `/<route name>`:
+   - HTML: `href`, `src`, `action`, `formaction`, `poster`, `data`, `srcset` (each candidate),
+     plus `url(...)` inside `<style>` blocks and `style=""` attributes. Uses
+     `golang.org/x/net/html`'s tokenizer (streaming, handles quoting/entities correctly) rather
+     than regex.
+   - CSS: `url(...)` and `@import "..."`.
+   - A URL is rewritten only if it starts with exactly one `/` (not `//host`, not `http:`, not
+     `data:`, not a relative `a/b.png`) and does not already start with `/<route name>/`.
+   - Inline `<script>` bodies and `.js` files are **not** touched (rewriting string literals
+     is unsound).
+2. **Header rewrite** — `Location` (root-relative, or absolute pointing at the route's `dest`
+   origin) → `/<route name>/...`; `Set-Cookie` `Path=/...` → `Path=/<route name>/...`.
+3. **Referer fallback for requests that miss routing** — covers what (1) can't see (JS
+   `fetch`/XHR, dynamic `import()`, runtime-built URLs). When the first path segment matches no
+   route but the `Referer` header's path begins with a configured `rewrite_paths` route's name,
+   the gateway replies `307 Temporary Redirect` to `/<route name><original path+query>`
+   (307, not 302, so method and body survive). Real routes always win over this fallback, and
+   `/_` is checked first as before. No `Referer` (or one pointing outside the gateway) ⇒ the
+   existing 404 `ROUTE_NOT_FOUND`.
+
+**Mechanics**:
+- Body rewriting needs plaintext, so for `rewrite_paths` routes the forwarded request carries
+  `Accept-Encoding: identity`; responses that arrive compressed anyway (`Content-Encoding`
+  present) are passed through unrewritten and logged at warn level.
+- `Content-Length` is recomputed after rewriting; `ETag` is left alone (the gateway's rewrite is
+  deterministic per route name).
+- Rewriting runs **after** the response-handler chain, so handler-added markup is rewritten too
+  and handlers still see the backend's pristine response.
+- `proxy.Forwarder` already buffers the whole body (§3), so rewriting adds one linear pass over
+  an already-resident buffer and no new memory class. Bodies over 10 MiB are passed through
+  unrewritten.
+- `single_endpoint` routes are mounted at `/`, so there is no prefix to add: `rewrite_paths` is
+  a no-op there (and the config loader rejects the combination as pointless, to avoid
+  surprise). **For a single app, `single_endpoint` is already the zero-cost fix.**
+
+**Rationale**: (1) alone fixes the reported blank page; (2) fixes login redirects and sessions
+that otherwise break right after the page renders; (3) is the only gateway-side option that
+helps with JS-initiated requests without parsing JS. Opt-in because an app that is already
+prefix-aware (or emits absolute URLs to the gateway) would be double-prefixed — mitigated by the
+"already starts with `/<route name>/`" guard but not eliminated — and because rewriting is
+content-modifying behaviour the route owner should choose deliberately.
+
+**Alternatives considered**:
+- *`<base href>` injection* — rejected: ignores root-relative URLs (above).
+- *Body rewrite only* — rejected: leaves every JS-initiated request and redirect broken.
+- *Referer fallback only* — rejected: an extra 307 round trip per asset, breaks under
+  `Referrer-Policy: no-referrer`, and fails on direct navigation to `/assets.css`.
+- *Rewriting JS source* — rejected: needs a JS parser to be correct; regex rewriting corrupts
+  string literals and regexes.
+- *Cookie-based route pinning* (remember last route in a gateway cookie) — rejected: wrong
+  route for users with two tabs open on different routes.
+- *Host-based routing* (`foo.gateway.example`) — the only approach with full fidelity (backend
+  sees `/`, browser sees `/`), but needs wildcard DNS/TLS and was already rejected in §5s for
+  this project. Remains the recommended escape hatch for apps that rewriting can't fix; out of
+  scope here.
+- *Making backends prefix-aware* (`<base>` + relative URLs, or a configured `BASE_PATH`) —
+  rejected as the gateway's job, for the same reason as §5s: backends shouldn't know their
+  gateway prefix. Still the cleanest fix for apps the user controls.
+
+**Known limitations** (documented in quickstart.md): absolute URLs built in JavaScript are only
+caught by the Referer fallback; apps that set `Referrer-Policy: no-referrer` lose that fallback;
+`Link:` headers and `<meta http-equiv=refresh>` are not rewritten; WebSocket upgrades are not
+proxied by this gateway at all (unchanged).
+
 ## 6. Testing approach
 
 **Decision**: Three layers, per the constitution's Testing Standards principle: (a) contract

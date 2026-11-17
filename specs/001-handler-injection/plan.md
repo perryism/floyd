@@ -21,6 +21,12 @@ timeout so one broken handler can't take down its route — let alone any other 
 built-in `GET /_` endpoint lists every configured route's name and description, so a caller
 can discover what's available without reading `config.yaml` directly.
 
+**Path rewriting (revision 3)**: pages proxied under `/<route>/` break when they reference
+root-relative URLs (`/assets.css` → blank page). Routes gain an opt-in `rewrite_paths` flag
+that re-prefixes URLs in HTML/CSS bodies and `Location`/`Set-Cookie` headers, plus a
+`Referer`-based 307 fallback for JS-initiated requests that miss routing. See research.md §5v
+and `contracts/path-rewriting.md`. New dependency: `golang.org/x/net/html` (tokenizer).
+
 **Revision note**: this supersedes the previous single-destination-per-process design (`--dest`
 + repeatable `--handlers`, no route table). See research.md §5r/§5s/§5t for what changed and
 why; §5/§6's original text is kept, struck through, rather than deleted.
@@ -31,7 +37,7 @@ why; §5/§6's original text is kept, struck through, rather than deleted.
 
 **Primary Dependencies**: Go: standard `net/http`, standard `flag` (CLI parsing — the flag set
 is small enough that a third-party CLI framework would be unjustified complexity per the
-Code Quality principle), `gopkg.in/yaml.v3` (routes config), `google.golang.org/grpc`,
+Code Quality principle), `gopkg.in/yaml.v3` (routes config), `golang.org/x/net/html` (HTML tokenizer for `rewrite_paths`), `google.golang.org/grpc`,
 `google.golang.org/protobuf`. Python: `grpcio` + generated stubs from the shared `.proto`
 contract, packaged behind a small `handlers-sdk` so handler authors implement two callbacks
 rather than hand-writing gRPC boilerplate.
@@ -79,6 +85,7 @@ API is explicitly out of scope (FR-011: startup-config-only).
 | I. Code Quality | Config parsing, path-based routing, proxy, chain-execution, and worker-pool supervision are separate, single-responsibility Go packages (`internal/config`, `internal/router`, `internal/proxy`, `internal/handler`). `internal/router` is genuinely warranted now (not the speculative abstraction it would have been before this request) — it exists because the feature now requires matching a request to one of several named routes. Linting (`golangci-lint` for Go, `ruff` for Python) gates CI; PR review required. | PASS |
 | II. Testing Standards (NON-NEGOTIABLE) | Three-layer test plan (contract / integration / unit) defined in research.md §6, mapped to specific FRs, now including multi-route and route-not-found scenarios. CI runs the full suite; no merge on red build. | PASS |
 | III. User Experience Consistency | One standard error envelope (`contracts/error-format.md`, now including `ROUTE_NOT_FOUND`) used for every handler rejection, failure, and routing miss (FR-007, FR-012), identical across every route and every gateway process. | PASS |
+| IV. Performance Requirements (path rewriting) | Rewriting is opt-in per route and runs one linear pass over the already-buffered body for `text/html`/`text/css` only; budget ≤5ms p95 added for a 256 KiB HTML page; bodies >10 MiB skipped. Referer fallback is O(1) (map lookup). | PASS |
 | IV. Performance Requirements | Latency/throughput budget stated above before implementation. Route lookup is O(1) regardless of route count. Worker pool is fixed-size and bounded per `(route, handler-file)` pair; every handler call has an enforced timeout. No unbounded queues/caches/pools introduced. | PASS |
 
 No violations — Complexity Tracking table below is empty by design.
@@ -111,6 +118,8 @@ internal/
 │                            # strips it before forwarding, 404s (ROUTE_NOT_FOUND) on no match;
 │                            # also serves the built-in GET /_ discovery listing (research.md §5u)
 ├── proxy/                   # Core reverse-proxy: forwards a request to a route's dest
+├── rewrite/                 # NEW: pure functions that re-prefix root-relative URLs in HTML/CSS
+│                            # bodies and Location/Set-Cookie headers (research.md §5v)
 ├── handler/
 │   ├── chain.go             # Runs one route's request/response handler chain in configured order (FR-005)
 │   └── workerpool/          # Supervises the bounded Python worker pool per (route, handler-file)

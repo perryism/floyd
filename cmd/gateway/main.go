@@ -22,6 +22,13 @@ import (
 	"api-gateway/internal/router"
 )
 
+// buildTime is stamped at link time (see the Makefile and release workflow):
+//
+//	go build -ldflags "-X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+//
+// A plain `go build` leaves it as "unknown".
+var buildTime = "unknown"
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "api-gateway:", err)
@@ -30,6 +37,11 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-version") {
+		fmt.Printf("api-gateway built %s\n", buildTime)
+		return nil
+	}
+
 	cfg, err := config.Parse(args)
 	if err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
@@ -63,10 +75,21 @@ func run(args []string) error {
 		if rc.BackendTimeoutMS > 0 {
 			proxyOpts = append(proxyOpts, proxy.WithTimeout(time.Duration(rc.BackendTimeoutMS)*time.Millisecond))
 		}
-		if len(rc.Headers) > 0 {
-			proxyOpts = append(proxyOpts, proxy.WithHeaders(rc.Headers))
+		injected := map[string]string{}
+		if rc.RewritePaths {
+			// Body rewriting needs plaintext (research.md §5v); config headers may override.
+			injected["Accept-Encoding"] = "identity"
+		}
+		for k, v := range rc.Headers {
+			injected[k] = v
+		}
+		if len(injected) > 0 {
+			proxyOpts = append(proxyOpts, proxy.WithHeaders(injected))
 		}
 		runner := handler.NewRunner(rc.Name, proxy.New(rc.Dest, proxyOpts...), handlers)
+		if rc.RewritePaths {
+			runner.WithPathRewrite("/"+rc.Name, rc.Dest.Scheme+"://"+rc.Dest.Host)
+		}
 		routes = append(routes, router.Route{Config: rc, Handler: runner})
 	}
 	defer stopAll(pools)

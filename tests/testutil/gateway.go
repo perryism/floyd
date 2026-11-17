@@ -23,6 +23,8 @@ type TestRoute struct {
 	Description string
 	Backend     *httptest.Server
 	Handlers    []config.HandlerRef
+	// RewritePaths mirrors the route's rewrite_paths config option.
+	RewritePaths bool
 }
 
 // Option configures NewTestGateway beyond its routes, mirroring a top-level --config option
@@ -81,13 +83,22 @@ func NewTestGateway(t *testing.T, routes []TestRoute, opts ...Option) *httptest.
 			handlers = append(handlers, handler.Handler{Ref: ref, Client: pool})
 		}
 
-		runner := handler.NewRunner(tr.Name, proxy.New(destURL), handlers)
+		var fopts []proxy.Option
+		if tr.RewritePaths {
+			fopts = append(fopts, proxy.WithHeaders(map[string]string{"Accept-Encoding": "identity"}))
+		}
+		runner := handler.NewRunner(tr.Name, proxy.New(destURL, fopts...), handlers)
+		if tr.RewritePaths {
+			runner.WithPathRewrite("/"+tr.Name, destURL.Scheme+"://"+destURL.Host)
+		}
 		routerRoutes = append(routerRoutes, router.Route{
 			Config: config.RouteConfig{
 				Name:        tr.Name,
 				Description: tr.Description,
 				Dest:        destURL,
 				Handlers:    tr.Handlers,
+
+				RewritePaths: tr.RewritePaths,
 			},
 			Handler: runner,
 		})

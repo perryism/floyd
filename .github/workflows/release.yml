@@ -37,7 +37,7 @@ jobs:
           [ "$GOOS" = "windows" ] && ext=".exe"
           name="gateway-${GOOS}-${GOARCH}"
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w" -o "dist/gateway${ext}" ./cmd/gateway
+          go build -trimpath -ldflags="-s -w -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "dist/gateway${ext}" ./cmd/gateway
           if [ "$GOOS" = "windows" ]; then
             (cd dist && zip "../${name}.zip" "gateway${ext}")
             echo "ASSET=${name}.zip" >> "$GITHUB_ENV"

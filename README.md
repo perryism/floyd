@@ -40,7 +40,10 @@ GATEWAY_PYTHON="$(pwd)/.venv/bin/python3" \
   chain several in order — omit for plain pass-through on that route), and optional `headers`
   (a map of header name to value injected into every request forwarded to that route's backend,
   overriding same-named headers; `${VAR}` in a value is read from the gateway's environment at
-  startup, and startup fails if `VAR` is unset — e.g. `headers: {API_TOKEN: ${API_TOKEN}, X_HEADER: foo}`).
+  startup, and startup fails if `VAR` is unset — e.g. `headers: {API_TOKEN: ${API_TOKEN}, X_HEADER: foo}`),
+  and optional `rewrite_paths: true` (re-prefixes root-relative URLs such as `/assets.css` to
+  `/<name>/assets.css` in HTML/CSS responses, `Location` and `Set-Cookie`, and redirects
+  JS-initiated requests via their `Referer`; see quickstart.md "Pages with root-relative paths").
 - `verbose`: when `true`, the gateway logs each request's method, path, and response status
   code to its standard log output.
 - `single_endpoint`: optional; only valid when `endpoints` has exactly one entry, and its value

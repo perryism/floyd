@@ -1,16 +1,18 @@
 .PHONY: build install test test-go test-python lint lint-go lint-python fmt proto venv clean
 
 GO_BIN     := gateway
+BUILD_TIME  = $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 PYTHON     ?= python3
 VENV       := .venv
 VENV_PYTHON := $(VENV)/bin/python3
 
 ## Build the gateway binary into ./gateway
 build:
-	go build -o $(GO_BIN) ./cmd/gateway
+	go build -ldflags "-X main.buildTime=$(BUILD_TIME)" -o $(GO_BIN) ./cmd/gateway
 
 ## Build and install the gateway binary into $(go env GOPATH)/bin
 install: build
+	rm -f $$(go env GOPATH)/bin/$(GO_BIN)
 	install -m 0755 $(GO_BIN) $$(go env GOPATH)/bin/$(GO_BIN)
 
 ## Run the full test suite (Go + Python). Spawns real Python worker processes, so it needs

@@ -51,6 +51,10 @@ type RouteConfig struct {
 	// any same-named header from the caller or a request handler. Values from the YAML may
 	// reference environment variables as ${NAME}; they are expanded at startup.
 	Headers map[string]string
+	// RewritePaths re-prefixes root-relative URLs in this route's HTML/CSS responses (and
+	// Location/Set-Cookie headers) with "/<name>" so pages that reference "/assets.css" work
+	// when mounted under /<name>/ (research.md §5v).
+	RewritePaths bool
 }
 
 // GatewayConfig is the whole process's configuration: --host/--port plus the routes and
@@ -84,6 +88,7 @@ type yamlRoute struct {
 	Handlers         handlersField     `yaml:"handlers"`
 	BackendTimeoutMS int               `yaml:"backend_timeout_ms"`
 	Headers          map[string]string `yaml:"headers"`
+	RewritePaths     bool              `yaml:"rewrite_paths"`
 }
 
 // handlersField accepts a route's "handlers" YAML value as either one scalar path or a list
@@ -209,6 +214,7 @@ func loadConfig(path string) ([]RouteConfig, yamlConfig, error) {
 			Handlers:         handlers,
 			BackendTimeoutMS: r.BackendTimeoutMS,
 			Headers:          headers,
+			RewritePaths:     r.RewritePaths,
 		})
 	}
 
@@ -217,6 +223,10 @@ func loadConfig(path string) ([]RouteConfig, yamlConfig, error) {
 			return nil, yamlConfig{}, fmt.Errorf(
 				"%q: single_endpoint %q is only valid when exactly one endpoint is configured, got %d",
 				path, raw.SingleEndpoint, len(routes))
+		}
+		if routes[0].RewritePaths {
+			return nil, yamlConfig{}, fmt.Errorf(
+				"%q: rewrite_paths has no effect with single_endpoint (the route is mounted at /)", path)
 		}
 		if raw.SingleEndpoint != routes[0].Name {
 			return nil, yamlConfig{}, fmt.Errorf(

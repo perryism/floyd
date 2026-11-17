@@ -49,6 +49,9 @@ endpoints:
     this route's backend (overriding same-named headers from the caller or a handler). `${VAR}`
     in a value is expanded from the gateway's environment at startup; an unset variable is a
     startup error.
+  - `rewrite_paths`: optional, default `false`. Set `true` when the backend's pages reference
+    root-relative URLs like `/assets.css` and would otherwise render blank under
+    `http://gateway/<name>/`. See "Pages with root-relative paths" below.
 - `single_endpoint`: optional; only valid when `endpoints` has exactly one entry, and its
   value must match that entry's `name`. Mounts that endpoint at the gateway's root — every
   path (including `/`) forwards to its `dest` unchanged, with no `/<name>/...` prefix needed:
@@ -104,3 +107,20 @@ caller gets a `HANDLER_ERROR` or `HANDLER_TIMEOUT` response (contracts/error-for
 including which `route` and `handler` failed), and every other route — including ones sharing
 the same handler *file* — keeps serving normally (FR-006): each route gets its own worker pool,
 even for a handler file two routes happen to share.
+
+## Pages with root-relative paths
+
+Symptom: `http://gateway/foo/` returns a blank page because the HTML says
+`<link href="/assets.css">`, which the browser requests as `http://gateway/assets.css` (no
+`/foo`) and gets `ROUTE_NOT_FOUND`. Fixes, in order of preference:
+
+1. **One app only?** Use `single_endpoint` — the app is mounted at `/` and nothing needs
+   rewriting.
+2. **You control the app?** Make it prefix-agnostic (relative URLs like `assets.css`).
+3. **Otherwise** set `rewrite_paths: true` on the route. The gateway then rewrites URLs in
+   HTML/CSS, redirects and cookie paths, and redirects stray JS-initiated requests using the
+   `Referer` header (`contracts/path-rewriting.md`).
+
+Limits of `rewrite_paths`: URLs constructed inside JavaScript are only recovered through the
+`Referer` fallback (one extra 307 per request, and not at all if the app sends
+`Referrer-Policy: no-referrer`); `Link:` headers and `<meta refresh>` are not rewritten.

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"io"
 	"net"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -22,5 +25,25 @@ func TestReachableIPs_WildcardListsNonLoopbackIPv4(t *testing.T) {
 				t.Errorf("reachableIPs(%q) returned %q, want a non-loopback IPv4 address", host, s)
 			}
 		}
+	}
+}
+
+func TestRun_VersionPrintsBuildTime(t *testing.T) {
+	old := buildTime
+	buildTime = "2026-01-02T03:04:05Z"
+	defer func() { buildTime = old }()
+
+	r, w, _ := os.Pipe()
+	stdout := os.Stdout
+	os.Stdout = w
+	err := run([]string{"--version"})
+	w.Close()
+	os.Stdout = stdout
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "2026-01-02T03:04:05Z") {
+		t.Fatalf("version output %q lacks build time", out)
 	}
 }

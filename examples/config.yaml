@@ -21,6 +21,10 @@ endpoints:
     # headers:
     #   API_TOKEN: ${API_TOKEN}
     #   X_HEADER: foo
+    # Set when the backend's pages use root-relative URLs like "/assets.css": rewrites them
+    # to "/app1/assets.css" (HTML/CSS bodies, Location, Set-Cookie, plus a Referer-based
+    # redirect for JS requests). Not valid together with single_endpoint.
+    # rewrite_paths: true
 
   - name: app2
     description: >-

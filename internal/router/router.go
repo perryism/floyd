@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"api-gateway/internal/config"
@@ -76,6 +77,11 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	segment, rest := firstSegment(r.URL.Path)
 	route, ok := rt.byName[segment]
 	if !ok {
+		if target := rt.refererRedirect(r); target != "" {
+			w.Header().Set("Vary", "Referer")
+			http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+			return
+		}
 		observability.WriteError(w, observability.CodeRouteNotFound,
 			fmt.Sprintf("no route configured for %q", segment), "", "")
 		return
@@ -86,6 +92,30 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	forwarded := r.Clone(r.Context())
 	forwarded.URL.Path = rest
 	route.Handler.ServeHTTP(w, forwarded)
+}
+
+// refererRedirect implements the path-rewriting fallback (research.md §5v item 3): a request
+// that matches no route but whose Referer is a page under a rewrite_paths route (e.g. a JS
+// fetch("/api/x") from /foo/page) is redirected to /<route>/api/x. Returns "" if not applicable.
+func (rt *Router) refererRedirect(r *http.Request) string {
+	ref := r.Referer()
+	if ref == "" {
+		return ""
+	}
+	u, err := url.Parse(ref)
+	if err != nil || (u.Host != "" && u.Host != r.Host) {
+		return ""
+	}
+	seg, _ := firstSegment(u.Path)
+	rte, ok := rt.byName[seg]
+	if !ok || !rte.Config.RewritePaths {
+		return ""
+	}
+	target := "/" + seg + r.URL.Path
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	return target
 }
 
 // firstSegment splits path into its first "/"-delimited segment and the remainder, which
